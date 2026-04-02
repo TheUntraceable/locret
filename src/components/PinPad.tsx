@@ -79,26 +79,35 @@ export function KeypadKey({
   children,
   size,
   variant = 'default',
+  disabled = false,
 }: {
   onPress: () => void;
   children: React.ReactNode;
   size: number;
   variant?: 'default' | 'accent' | 'ghost';
+  disabled?: boolean;
 }) {
   const [themeAccent, themeSurface] = useThemeColor(['accent', 'surface']);
 
+  const handlePress = () => {
+    if (disabled) return;
+    onPress();
+  };
+
   return (
     <Pressable
-      onPress={onPress}
+      onPress={handlePress}
+      disabled={disabled}
       className="items-center justify-center rounded-2xl"
       style={({ pressed }) => ({
         width: size,
         height: size,
+        opacity: disabled ? 0.45 : 1,
         backgroundColor: variant === 'ghost'
-          ? (pressed ? `${themeSurface}80` : 'transparent')
+          ? (pressed && !disabled ? `${themeSurface}80` : 'transparent')
           : variant === 'accent'
-          ? (pressed ? `${themeAccent}30` : `${themeAccent}15`)
-          : (pressed ? `${themeSurface}` : `${themeSurface}90`),
+          ? (pressed && !disabled ? `${themeAccent}30` : `${themeAccent}15`)
+          : (pressed && !disabled ? `${themeSurface}` : `${themeSurface}90`),
       })}
     >
       {children}

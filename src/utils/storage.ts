@@ -7,6 +7,12 @@ const SECRETS_KEY = 'secrets';
 const TOTP_ACCOUNTS_KEY = 'totp_accounts';
 const ENCRYPTION_KEY = 'encryption_key';
 const PIN_HASH_KEY = 'pin_hash';
+const PIN_RATE_LIMIT_KEY = 'pin_rate_limit';
+
+interface PinRateLimitState {
+  failedAttempts: number;
+  lockoutUntil: number;
+}
 
 export async function getProjects(): Promise<Project[]> {
   const data = await AsyncStorage.getItem(PROJECTS_KEY);
@@ -97,6 +103,30 @@ export async function removePin(): Promise<void> {
   await SecureStore.deleteItemAsync(PIN_HASH_KEY);
 }
 
+export async function getPinRateLimitState(): Promise<PinRateLimitState> {
+  const raw = await SecureStore.getItemAsync(PIN_RATE_LIMIT_KEY);
+  if (!raw) {
+    return { failedAttempts: 0, lockoutUntil: 0 };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PinRateLimitState>;
+    const failedAttempts = Number.isFinite(parsed.failedAttempts) ? Math.max(0, Math.floor(parsed.failedAttempts as number)) : 0;
+    const lockoutUntil = Number.isFinite(parsed.lockoutUntil) ? Math.max(0, Math.floor(parsed.lockoutUntil as number)) : 0;
+    return { failedAttempts, lockoutUntil };
+  } catch {
+    return { failedAttempts: 0, lockoutUntil: 0 };
+  }
+}
+
+export async function setPinRateLimitState(state: PinRateLimitState): Promise<void> {
+  await SecureStore.setItemAsync(PIN_RATE_LIMIT_KEY, JSON.stringify(state));
+}
+
+export async function clearPinRateLimitState(): Promise<void> {
+  await SecureStore.deleteItemAsync(PIN_RATE_LIMIT_KEY);
+}
+
 // TOTP Account storage
 export async function getTotpAccounts(): Promise<TotpAccount[]> {
   const data = await AsyncStorage.getItem(TOTP_ACCOUNTS_KEY);
@@ -134,4 +164,5 @@ export async function wipeAllData(): Promise<void> {
   await AsyncStorage.removeItem(TOTP_ACCOUNTS_KEY);
   await SecureStore.deleteItemAsync(ENCRYPTION_KEY);
   await SecureStore.deleteItemAsync(PIN_HASH_KEY);
+  await SecureStore.deleteItemAsync(PIN_RATE_LIMIT_KEY);
 }

@@ -8,6 +8,16 @@ import { useApp } from '../context/AppContext';
 
 const PIN_LENGTH = 6;
 
+function formatRetryDelay(ms: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+}
+
 interface BiometricAuthProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -21,7 +31,7 @@ export function BiometricAuth({
   onSuccess,
   promptMessage = 'Authenticate to continue',
 }: BiometricAuthProps) {
-  const { authenticate, hasPinSetup, verifyPinAuth, setupPin, markAuthenticated, resetApp, initializeApp } = useApp();
+  const { authenticate, hasPinSetup, verifyPinAuth, setupPin, markAuthenticated, resetApp, initializeApp, getPinLockoutRemaining } = useApp();
   const [mode, setMode] = useState<'choose' | 'biometric' | 'pin' | 'pin-setup' | 'forgot-pin'>('choose');
   const pinRef = useRef('');
   const confirmPinRef = useRef('');
@@ -32,8 +42,36 @@ export function BiometricAuth({
   const [pinError, setPinError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
+  const [pinLockoutUntil, setPinLockoutUntil] = useState(0);
+  const [pinLockoutRemainingMs, setPinLockoutRemainingMs] = useState(0);
   const hasInitializedRef = useRef(false);
   const prevIsOpenRef = useRef(isOpen);
+  const isPinInputLocked = pinLockoutRemainingMs > 0;
+
+  useEffect(() => {
+    if (pinLockoutUntil <= Date.now()) {
+      return;
+    }
+
+    const tick = () => {
+      const remaining = Math.max(0, pinLockoutUntil - Date.now());
+      setPinLockoutRemainingMs(remaining);
+    };
+
+    const intervalId = setInterval(tick, 250);
+    return () => clearInterval(intervalId);
+  }, [pinLockoutUntil]);
+
+  useEffect(() => {
+    if (mode !== 'pin') return;
+
+    if (pinLockoutRemainingMs > 0) {
+      setPinError(`Try again in ${formatRetryDelay(pinLockoutRemainingMs)}`);
+    } else if (pinLockoutUntil > 0) {
+      setPinLockoutUntil(0);
+      setPinError('');
+    }
+  }, [mode, pinLockoutRemainingMs, pinLockoutUntil]);
 
   const updatePinSubmitState = useCallback(() => {
     setCanSubmitPin(pinRef.current.length > 0);
@@ -73,6 +111,16 @@ export function BiometricAuth({
         }
         clearPinFields();
         setPinError('');
+        
+        // Check for existing lockout
+        const lockoutMs = await getPinLockoutRemaining();
+        if (lockoutMs > 0) {
+          setPinLockoutRemainingMs(lockoutMs);
+          setPinLockoutUntil(Date.now() + lockoutMs);
+        } else {
+          setPinLockoutUntil(0);
+          setPinLockoutRemainingMs(0);
+        }
         hasInitializedRef.current = true;
       })();
     } else {
@@ -80,11 +128,13 @@ export function BiometricAuth({
         hasInitializedRef.current = false;
         clearPinFields();
         setPinError('');
+        setPinLockoutUntil(0);
+        setPinLockoutRemainingMs(0);
       }
     }
 
     prevIsOpenRef.current = isOpen;
-  }, [isOpen, hasPinSetup, clearPinFields]);
+  }, [isOpen, hasPinSetup, clearPinFields, getPinLockoutRemaining]);
 
   const handleBiometricAuth = useCallback(async () => {
     setIsAuthenticating(true);
@@ -109,8 +159,10 @@ export function BiometricAuth({
     if (!pin) return;
     setIsAuthenticating(true);
     try {
-      const success = await verifyPinAuth(pin);
-      if (success) {
+      const result = await verifyPinAuth(pin);
+      if (result.success) {
+        setPinLockoutUntil(0);
+        setPinLockoutRemainingMs(0);
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         markAuthenticated();
         onSuccess();
@@ -119,7 +171,13 @@ export function BiometricAuth({
         setPinError('');
       } else {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setPinError('Incorrect PIN');
+        if (result.retryAfterMs > 0) {
+          clearPinFields();
+          setPinLockoutRemainingMs(result.retryAfterMs);
+          setPinLockoutUntil(Date.now() + result.retryAfterMs);
+        } else {
+          setPinError('Incorrect PIN');
+        }
       }
     } finally {
       setIsAuthenticating(false);
@@ -207,6 +265,7 @@ export function BiometricAuth({
                         setPinError('');
                         updatePinSubmitState();
                       }}
+                      editable={!isPinInputLocked}
                       secureTextEntry
                       keyboardType="number-pad"
                       placeholder="Enter your PIN"
@@ -214,15 +273,15 @@ export function BiometricAuth({
                     />
                     {pinError && <Label>{pinError}</Label>}
                   </TextField>
-                  <Button
-                    variant="primary"
-                    onPress={handlePinAuth}
-                    isDisabled={isAuthenticating || !canSubmitPin}
-                  >
-                    <Button.Label>Verify PIN</Button.Label>
-                  </Button>
+                    <Button
+                      variant="primary"
+                      onPress={handlePinAuth}
+                      isDisabled={isAuthenticating || !canSubmitPin || isPinInputLocked}
+                    >
+                      <Button.Label>Verify PIN</Button.Label>
+                    </Button>
                   <View className="flex-row justify-between">
-                    {biometricsAvailable && (
+                    {biometricsAvailable && !isPinInputLocked && (
                       <Button
                         variant="ghost"
                         size="sm"

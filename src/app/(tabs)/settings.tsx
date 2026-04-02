@@ -11,11 +11,22 @@ const PIN_LENGTH = 6;
 const KEYPAD_BUTTON_SIZE = 68;
 const KEYPAD_GAP = 16;
 
+function formatRetryDelay(ms: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+}
+
 // Full-screen Change PIN flow component
 interface ChangePinScreenProps {
   step: 'current' | 'new' | 'confirm' | 'success';
   error: string;
   errorShake: boolean;
+  isInputLocked: boolean;
   onCurrentComplete: (pin: string) => void;
   onNewComplete: (pin: string) => void;
   onConfirmComplete: (pin: string) => void;
@@ -27,6 +38,7 @@ function ChangePinScreen({
   step,
   error,
   errorShake,
+  isInputLocked,
   onCurrentComplete,
   onNewComplete,
   onConfirmComplete,
@@ -37,6 +49,12 @@ function ChangePinScreen({
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState(false);
   const prevStepRef = useRef(step);
+  const isLockedRef = useRef(isInputLocked);
+
+  // Keep ref in sync
+  useEffect(() => {
+    isLockedRef.current = isInputLocked;
+  }, [isInputLocked]);
 
   // Reset pin when step changes
   if (prevStepRef.current !== step) {
@@ -70,6 +88,10 @@ function ChangePinScreen({
   }, [pin, step, onCurrentComplete, onNewComplete, onConfirmComplete]);
 
   const handleKeyPress = useCallback((key: string) => {
+    if (isLockedRef.current) {
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setPinError(false);
     setPin((prev) => {
@@ -79,6 +101,10 @@ function ChangePinScreen({
   }, []);
 
   const handleDelete = useCallback(() => {
+    if (isLockedRef.current) {
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setPin((prev) => prev.slice(0, -1));
   }, []);
@@ -140,7 +166,7 @@ function ChangePinScreen({
           {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']].map((row) => (
             <View key={row.join('')} className="flex-row" style={{ gap: KEYPAD_GAP }}>
               {row.map((num) => (
-                <KeypadKey key={num} size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress(num)}>
+                <KeypadKey key={num} size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress(num)} disabled={isInputLocked}>
                   <Text className="text-2xl font-semibold text-foreground">{num}</Text>
                 </KeypadKey>
               ))}
@@ -148,11 +174,11 @@ function ChangePinScreen({
           ))}
           <View className="flex-row" style={{ gap: KEYPAD_GAP }}>
             <View style={{ width: KEYPAD_BUTTON_SIZE, height: KEYPAD_BUTTON_SIZE }} />
-            <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress('0')}>
+            <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress('0')} disabled={isInputLocked}>
               <Text className="text-2xl font-semibold text-foreground">0</Text>
             </KeypadKey>
             {pin.length > 0 ? (
-              <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={handleDelete} variant="ghost">
+              <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={handleDelete} variant="ghost" disabled={isInputLocked}>
                 <Ionicons name="backspace-outline" size={24} color={themeMuted} />
               </KeypadKey>
             ) : (
@@ -173,7 +199,7 @@ function ChangePinScreen({
 }
 
 export default function SettingsTab() {
-  const { hasPinSetup, verifyPinAuth, setupPin, resetApp, initializeApp, projects, lockApp } = useApp();
+  const { hasPinSetup, verifyPinAuth, setupPin, resetApp, initializeApp, projects, lockApp, getPinLockoutRemaining } = useApp();
   const [themeAccent, themeDanger, themeMuted] = useThemeColor(['accent', 'danger', 'muted']);
 
   const [showChangePinFlow, setShowChangePinFlow] = useState(false);
@@ -185,24 +211,73 @@ export default function SettingsTab() {
   const [newPin, setNewPin] = useState('');
   const [pinError, setPinError] = useState('');
   const [pinErrorShake, setPinErrorShake] = useState(false);
+  const [pinLockoutUntil, setPinLockoutUntil] = useState(0);
+  const [pinLockoutRemainingMs, setPinLockoutRemainingMs] = useState(0);
 
-  const resetPinForm = useCallback(() => {
+  const isPinInputLocked = pinStep === 'current' && pinLockoutRemainingMs > 0;
+
+  useEffect(() => {
+    if (pinLockoutUntil <= Date.now()) {
+      return;
+    }
+
+    const tick = () => {
+      const remaining = Math.max(0, pinLockoutUntil - Date.now());
+      setPinLockoutRemainingMs(remaining);
+    };
+
+    const intervalId = setInterval(tick, 250);
+    return () => clearInterval(intervalId);
+  }, [pinLockoutUntil]);
+
+  useEffect(() => {
+    if (pinStep !== 'current') return;
+
+    if (pinLockoutRemainingMs > 0) {
+      setPinError(`Try again in ${formatRetryDelay(pinLockoutRemainingMs)}`);
+      setPinErrorShake(false);
+    } else if (pinLockoutUntil > 0) {
+      setPinLockoutUntil(0);
+      setPinError('');
+      setPinErrorShake(false);
+    }
+  }, [pinStep, pinLockoutRemainingMs, pinLockoutUntil]);
+
+  const resetPinForm = useCallback(async () => {
     setNewPin('');
     setPinError('');
     setPinErrorShake(false);
     setPinStep('current');
-  }, []);
+    
+    // Check for existing lockout
+    const lockoutMs = await getPinLockoutRemaining();
+    if (lockoutMs > 0) {
+      setPinLockoutRemainingMs(lockoutMs);
+      setPinLockoutUntil(Date.now() + lockoutMs);
+    } else {
+      setPinLockoutUntil(0);
+      setPinLockoutRemainingMs(0);
+    }
+  }, [getPinLockoutRemaining]);
 
   const handleCurrentPinComplete = useCallback(async (enteredPin: string) => {
-    const valid = await verifyPinAuth(enteredPin);
-    if (valid) {
+    const result = await verifyPinAuth(enteredPin);
+    if (result.success) {
+      setPinLockoutUntil(0);
+      setPinLockoutRemainingMs(0);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setPinStep('new');
       setPinError('');
     } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setPinError('Incorrect PIN');
-      setPinErrorShake(true);
+      if (result.retryAfterMs > 0) {
+        setPinLockoutRemainingMs(result.retryAfterMs);
+        setPinLockoutUntil(Date.now() + result.retryAfterMs);
+        setPinErrorShake(false);
+      } else {
+        setPinError('Incorrect PIN');
+        setPinErrorShake(true);
+      }
     }
   }, [verifyPinAuth]);
 
@@ -249,6 +324,7 @@ export default function SettingsTab() {
         step={pinStep}
         error={pinError}
         errorShake={pinErrorShake}
+        isInputLocked={isPinInputLocked}
         onCurrentComplete={handleCurrentPinComplete}
         onNewComplete={handleNewPinComplete}
         onConfirmComplete={handleConfirmPinComplete}

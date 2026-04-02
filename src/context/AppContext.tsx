@@ -16,6 +16,9 @@ import {
   getPinHash,
   setPinHash,
   hasPin,
+  clearPinRateLimitState,
+  getPinRateLimitState,
+  setPinRateLimitState,
   wipeAllData,
 } from '../utils/storage';
 import {
@@ -27,6 +30,15 @@ import {
 } from '../utils/encryption';
 
 const SESSION_TIMEOUT_MS = 60_000; // 1 minute
+const PIN_BACKOFF_BASE_MS = 5_000;
+const PIN_BACKOFF_MAX_MS = 3_600_000;
+const PIN_LOCKOUT_THRESHOLD = 3; // Allow this many wrong attempts before lockout
+
+interface PinVerifyResult {
+  success: boolean;
+  retryAfterMs: number;
+  attemptsUntilLockout: number;
+}
 
 interface AppContextType {
   projects: Project[];
@@ -48,7 +60,8 @@ interface AppContextType {
   clearDecryptedSecrets: () => void;
   authenticate: () => Promise<boolean>;
   setupPin: (pin: string) => Promise<void>;
-  verifyPinAuth: (pin: string) => Promise<boolean>;
+  verifyPinAuth: (pin: string) => Promise<PinVerifyResult>;
+  getPinLockoutRemaining: () => Promise<number>;
   initializeApp: () => Promise<void>;
   markAuthenticated: () => void;
   isSessionValid: () => boolean;
@@ -276,8 +289,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (hasHardware && isEnrolled) {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Authenticate to view secrets',
-        fallbackLabel: 'Use PIN',
         cancelLabel: 'Cancel',
+        disableDeviceFallback: true,
       });
       return result.success;
     }
@@ -287,13 +300,66 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setupPin = useCallback(async (pin: string) => {
     const hash = await hashPin(pin);
     await setPinHash(hash);
+    await clearPinRateLimitState();
     setHasPinSetup(true);
   }, []);
 
-  const verifyPinAuth = useCallback(async (pin: string): Promise<boolean> => {
+  const verifyPinAuth = useCallback(async (pin: string): Promise<PinVerifyResult> => {
     const hash = await getPinHash();
-    if (!hash) return false;
-    return verifyPin(pin, hash);
+    if (!hash) {
+      return { success: false, retryAfterMs: 0, attemptsUntilLockout: 0 };
+    }
+
+    const now = Date.now();
+    const rateLimitState = await getPinRateLimitState();
+
+    if (rateLimitState.lockoutUntil > now) {
+      return {
+        success: false,
+        retryAfterMs: rateLimitState.lockoutUntil - now,
+        attemptsUntilLockout: 0,
+      };
+    }
+
+    const valid = await verifyPin(pin, hash);
+    if (valid) {
+      await clearPinRateLimitState();
+      return { success: true, retryAfterMs: 0, attemptsUntilLockout: PIN_LOCKOUT_THRESHOLD };
+    }
+
+    const failedAttempts = rateLimitState.failedAttempts + 1;
+
+    if (failedAttempts < PIN_LOCKOUT_THRESHOLD) {
+      await setPinRateLimitState({ failedAttempts, lockoutUntil: 0 });
+      return {
+        success: false,
+        retryAfterMs: 0,
+        attemptsUntilLockout: PIN_LOCKOUT_THRESHOLD - failedAttempts,
+      };
+    }
+
+    const lockoutAttempts = failedAttempts - PIN_LOCKOUT_THRESHOLD + 1;
+    const backoffMs = Math.min(
+      PIN_BACKOFF_MAX_MS,
+      PIN_BACKOFF_BASE_MS * 2 ** (lockoutAttempts - 1),
+    );
+
+    await setPinRateLimitState({ failedAttempts, lockoutUntil: now + backoffMs });
+
+    return {
+      success: false,
+      retryAfterMs: backoffMs,
+      attemptsUntilLockout: 0,
+    };
+  }, []);
+
+  const getPinLockoutRemaining = useCallback(async (): Promise<number> => {
+    const rateLimitState = await getPinRateLimitState();
+    const now = Date.now();
+    if (rateLimitState.lockoutUntil > now) {
+      return rateLimitState.lockoutUntil - now;
+    }
+    return 0;
   }, []);
 
   const resetApp = useCallback(async () => {
@@ -338,6 +404,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         authenticate,
         setupPin,
         verifyPinAuth,
+        getPinLockoutRemaining,
         initializeApp,
         markAuthenticated,
         isSessionValid,

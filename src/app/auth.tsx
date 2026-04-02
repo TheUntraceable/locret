@@ -12,10 +12,21 @@ const PIN_LENGTH = 6;
 const KEYPAD_BUTTON_SIZE = 68;
 const KEYPAD_GAP = 16;
 
+function formatRetryDelay(ms: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+}
+
 export default function AuthScreen() {
   const {
     authenticate, hasPinSetup, verifyPinAuth, setupPin,
     markAuthenticated, initializeApp, loadProjects, resetApp,
+    getPinLockoutRemaining,
   } = useApp();
   const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
 
@@ -26,8 +37,41 @@ export default function AuthScreen() {
   const [pinError, setPinError] = useState(false);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [pinLockoutUntil, setPinLockoutUntil] = useState(0);
+  const [pinLockoutRemainingMs, setPinLockoutRemainingMs] = useState(0);
 
   const displayLength = mode === 'pin-confirm' ? confirmPin.length : pin.length;
+  const isPinInputLocked = mode === 'auth' && pinLockoutRemainingMs > 0;
+
+  // Countdown timer — ticks pinLockoutRemainingMs toward 0
+  useEffect(() => {
+    if (pinLockoutUntil <= Date.now()) {
+      return;
+    }
+
+    const tick = () => {
+      const remaining = Math.max(0, pinLockoutUntil - Date.now());
+      setPinLockoutRemainingMs(remaining);
+    };
+
+    const intervalId = setInterval(tick, 250);
+    return () => clearInterval(intervalId);
+  }, [pinLockoutUntil]);
+
+  // Display lockout error or clear it when lockout expires
+  useEffect(() => {
+    if (mode !== 'auth') return;
+
+    if (pinLockoutRemainingMs > 0) {
+      setPinError(true);
+      setError(`Try again in ${formatRetryDelay(pinLockoutRemainingMs)}`);
+    } else if (pinLockoutUntil > 0) {
+      // Lockout expired — clean up
+      setPinLockoutUntil(0);
+      setPinError(false);
+      setError('');
+    }
+  }, [mode, pinLockoutRemainingMs, pinLockoutUntil]);
 
   useEffect(() => {
     (async () => {
@@ -65,28 +109,45 @@ export default function AuthScreen() {
         setMode('pin-setup');
       } else {
         setMode('auth');
-        if (hasHardware && isEnrolled) {
+        
+        // Check for existing lockout from previous session
+        const lockoutMs = await getPinLockoutRemaining();
+        if (lockoutMs > 0) {
+          setPinLockoutRemainingMs(lockoutMs);
+          setPinLockoutUntil(Date.now() + lockoutMs);
+        } else if (hasHardware && isEnrolled) {
           attemptBiometric();
         }
       }
     })();
-  }, [isInitialized, hasPinSetup, attemptBiometric]);
+  }, [isInitialized, hasPinSetup, attemptBiometric, getPinLockoutRemaining]);
 
   const handlePinComplete = useCallback(async (enteredPin: string) => {
     if (mode === 'auth') {
-      const success = await verifyPinAuth(enteredPin);
-      if (success) {
+      const result = await verifyPinAuth(enteredPin);
+      if (result.success) {
+        setPinLockoutUntil(0);
+        setPinLockoutRemainingMs(0);
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         handleSuccess();
       } else {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setPinError(true);
-        setError('Incorrect PIN');
-        setTimeout(() => {
+        if (result.retryAfterMs > 0) {
           setPin('');
-          setPinError(false);
-          setError('');
-        }, 600);
+          setPinLockoutRemainingMs(result.retryAfterMs);
+          setPinLockoutUntil(Date.now() + result.retryAfterMs);
+        } else {
+          const attemptsMsg = result.attemptsUntilLockout === 1
+            ? 'Incorrect PIN \u2014 1 attempt left'
+            : `Incorrect PIN \u2014 ${result.attemptsUntilLockout} attempts left`;
+          setError(attemptsMsg);
+          setTimeout(() => {
+            setPin('');
+            setPinError(false);
+            setError('');
+          }, 600);
+        }
       }
     } else if (mode === 'pin-setup') {
       if (enteredPin.length !== PIN_LENGTH) {
@@ -261,7 +322,7 @@ export default function AuthScreen() {
             {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']].map((row) => (
               <View key={row.join('')} className="flex-row" style={{ gap: KEYPAD_GAP }}>
                 {row.map((num) => (
-                  <KeypadKey key={num} size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress(num)}>
+                  <KeypadKey key={num} size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress(num)} disabled={isPinInputLocked}>
                     <Text className="text-2xl font-semibold text-foreground">{num}</Text>
                   </KeypadKey>
                 ))}
@@ -270,20 +331,20 @@ export default function AuthScreen() {
             <View className="flex-row" style={{ gap: KEYPAD_GAP }}>
               {/* Bottom-left */}
               {mode === 'auth' && biometricsAvailable ? (
-                <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={attemptBiometric} variant="accent">
+                <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={attemptBiometric} variant="accent" disabled={isPinInputLocked}>
                   <Ionicons name="finger-print" size={26} color={themeAccent} />
                 </KeypadKey>
               ) : (
                 <View style={{ width: KEYPAD_BUTTON_SIZE, height: KEYPAD_BUTTON_SIZE }} />
               )}
 
-              <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress('0')}>
+              <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress('0')} disabled={isPinInputLocked}>
                 <Text className="text-2xl font-semibold text-foreground">0</Text>
               </KeypadKey>
 
               {/* Bottom-right: delete */}
               {displayLength > 0 ? (
-                <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={handleDelete} variant="ghost">
+                <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={handleDelete} variant="ghost" disabled={isPinInputLocked}>
                   <Ionicons name="backspace-outline" size={24} color={themeMuted} />
                 </KeypadKey>
               ) : (
