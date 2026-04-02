@@ -43,6 +43,7 @@ export default function ProjectDetail() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteSecretConfirm, setShowDeleteSecretConfirm] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<TextInput>(null);
   const [copiedSecretId, setCopiedSecretId] = useState<string | null>(null);
   const [editingSecret, setEditingSecret] = useState<{
     id: string; name: string; description?: string; decryptedValue: string; expiresAt?: string;
@@ -212,14 +213,18 @@ export default function ProjectDetail() {
                 <View className="flex-row items-center bg-surface rounded-xl px-3 gap-2">
                   <Ionicons name="search" size={18} color={themeMuted} />
                   <TextInput
-                    value={searchQuery}
+                    ref={searchInputRef}
+                    defaultValue={searchQuery}
                     onChangeText={setSearchQuery}
                     placeholder="Search secrets..."
                     placeholderTextColor={themeMuted}
                     className="flex-1 py-3 text-foreground"
                   />
                   {searchQuery.length > 0 && (
-                    <Pressable onPress={() => setSearchQuery('')}>
+                    <Pressable onPress={() => {
+                      setSearchQuery('');
+                      searchInputRef.current?.setNativeProps?.({ text: '' });
+                    }}>
                       <Ionicons name="close-circle" size={18} color={themeMuted} />
                     </Pressable>
                   )}

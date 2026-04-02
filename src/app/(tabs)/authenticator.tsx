@@ -92,6 +92,7 @@ export default function AuthenticatorTab() {
   const [editingAccount, setEditingAccount] = useState<TotpAccount | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<TextInput>(null);
   const [sheetAccount, setSheetAccount] = useState<TotpAccount | null>(null);
   const [showSheet, setShowSheet] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -273,14 +274,18 @@ export default function AuthenticatorTab() {
               <View className="flex-row items-center bg-surface rounded-xl px-3 gap-2">
                 <Ionicons name="search" size={18} color={themeMuted} />
                 <TextInput
-                  value={searchQuery}
+                  ref={searchInputRef}
+                  defaultValue={searchQuery}
                   onChangeText={setSearchQuery}
                   placeholder="Search accounts..."
                   placeholderTextColor={themeMuted}
                   className="flex-1 py-3 text-foreground"
                 />
                 {searchQuery.length > 0 && (
-                  <Pressable onPress={() => setSearchQuery('')}>
+                  <Pressable onPress={() => {
+                    setSearchQuery('');
+                    searchInputRef.current?.setNativeProps?.({ text: '' });
+                  }}>
                     <Ionicons name="close-circle" size={18} color={themeMuted} />
                   </Pressable>
                 )}

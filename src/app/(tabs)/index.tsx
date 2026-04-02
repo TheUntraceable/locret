@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, Pressable, ActivityIndicator, TextInput } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Button, useThemeColor } from 'heroui-native';
@@ -11,6 +11,7 @@ export default function SecretsTab() {
   const { projects, loadProjects, isLoading } = useApp();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<TextInput>(null);
   const [themeAccent, themeMuted] = useThemeColor(['accent', 'muted']);
 
   useFocusEffect(
@@ -73,14 +74,18 @@ export default function SecretsTab() {
                 <View className="flex-row items-center bg-surface rounded-xl px-3 gap-2">
                   <Ionicons name="search" size={18} color={themeMuted} />
                   <TextInput
-                    value={searchQuery}
+                    ref={searchInputRef}
+                    defaultValue={searchQuery}
                     onChangeText={setSearchQuery}
                     placeholder="Search projects..."
                     placeholderTextColor={themeMuted}
                     className="flex-1 py-3 text-foreground"
                   />
                   {searchQuery.length > 0 && (
-                    <Pressable onPress={() => setSearchQuery('')}>
+                    <Pressable onPress={() => {
+                      setSearchQuery('');
+                      searchInputRef.current?.setNativeProps?.({ text: '' });
+                    }}>
                       <Ionicons name="close-circle" size={18} color={themeMuted} />
                     </Pressable>
                   )}
