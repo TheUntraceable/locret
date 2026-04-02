@@ -16,7 +16,7 @@ const config = {
   },
 };
 
-const AUTO_LOCK_MS = 5 * 60 * 1000; // 5 minutes
+const AUTO_LOCK_MS = 1 * 60 * 1000; // 1 minute
 
 function AutoLockManager({ children }: { children: React.ReactNode }) {
   const { lockApp } = useApp();
