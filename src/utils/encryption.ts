@@ -4,6 +4,7 @@ import {
   aesEncryptAsync,
   aesDecryptAsync,
   digestStringAsync,
+  getRandomBytes,
   CryptoDigestAlgorithm,
   CryptoEncoding,
 } from 'expo-crypto';
@@ -60,12 +61,25 @@ export async function decryptValue(
 }
 
 export async function hashPin(pin: string): Promise<string> {
-  return digestStringAsync(CryptoDigestAlgorithm.SHA256, pin, {
-    encoding: CryptoEncoding.HEX,
-  });
+  const saltBytes = getRandomBytes(16);
+  const salt = uint8ArrayToHex(saltBytes);
+  const hash = await digestStringAsync(
+    CryptoDigestAlgorithm.SHA256,
+    salt + pin,
+    { encoding: CryptoEncoding.HEX }
+  );
+  return `${salt}:${hash}`;
 }
 
-export async function verifyPin(pin: string, hash: string): Promise<boolean> {
-  const inputHash = await hashPin(pin);
-  return inputHash === hash;
+export async function verifyPin(pin: string, stored: string): Promise<boolean> {
+  const sep = stored.indexOf(':');
+  if (sep === -1) return false;
+  const salt = stored.slice(0, sep);
+  const expectedHash = stored.slice(sep + 1);
+  const actualHash = await digestStringAsync(
+    CryptoDigestAlgorithm.SHA256,
+    salt + pin,
+    { encoding: CryptoEncoding.HEX }
+  );
+  return actualHash === expectedHash;
 }
