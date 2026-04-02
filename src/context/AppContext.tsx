@@ -1,33 +1,40 @@
-import React, { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
-import * as LocalAuthentication from 'expo-local-authentication';
-import { randomUUID } from 'expo-crypto';
-import type { Project, Secret } from '../types';
+import { randomUUID } from "expo-crypto";
+import * as LocalAuthentication from "expo-local-authentication";
+import React, {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useRef,
+  useState,
+} from "react";
+import type { Project, Secret } from "../types";
 import {
-  getProjects,
-  addProject as addProjectToStorage,
-  deleteProject as deleteProjectFromStorage,
-  getSecretsByProjectId,
-  addSecret as addSecretToStorage,
-  updateSecret as updateSecretInStorage,
-  deleteSecret as deleteSecretFromStorage,
-  getEncryptionKey,
-  setEncryptionKey,
-  hasEncryptionKey,
-  getPinHash,
-  setPinHash,
-  hasPin,
-  clearPinRateLimitState,
-  getPinRateLimitState,
-  setPinRateLimitState,
-  wipeAllData,
-} from '../utils/storage';
-import {
-  generateEncryptionKey,
-  encryptValue,
   decryptValue,
+  encryptValue,
+  generateEncryptionKey,
   hashPin,
   verifyPin,
-} from '../utils/encryption';
+} from "../utils/encryption";
+import {
+  addProject as addProjectToStorage,
+  addSecret as addSecretToStorage,
+  clearPinRateLimitState,
+  deleteProject as deleteProjectFromStorage,
+  deleteSecret as deleteSecretFromStorage,
+  getEncryptionKey,
+  getPinHash,
+  getPinRateLimitState,
+  getProjects,
+  getSecretsByProjectId,
+  hasEncryptionKey,
+  hasPin,
+  setEncryptionKey,
+  setPinHash,
+  setPinRateLimitState,
+  updateSecret as updateSecretInStorage,
+  wipeAllData,
+} from "../utils/storage";
 
 const SESSION_TIMEOUT_MS = 60_000; // 1 minute
 const PIN_BACKOFF_BASE_MS = 5_000;
@@ -51,12 +58,26 @@ interface AppContextType {
   loadSecrets: (projectId: string) => Promise<void>;
   addProject: (name: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
-  addSecret: (projectId: string, name: string, description: string | undefined, value: string, expiresAt?: string) => Promise<void>;
+  addSecret: (
+    projectId: string,
+    name: string,
+    description: string | undefined,
+    value: string,
+    expiresAt?: string,
+  ) => Promise<void>;
   deleteSecret: (id: string, projectId: string) => Promise<void>;
-  updateSecret: (id: string, name: string, description: string | undefined, value: string, expiresAt?: string) => Promise<void>;
+  updateSecret: (
+    id: string,
+    name: string,
+    description: string | undefined,
+    value: string,
+    expiresAt?: string,
+  ) => Promise<void>;
   duplicateSecret: (secret: Secret, projectId: string) => Promise<void>;
   decryptSecret: (secret: Secret) => Promise<string | null>;
-  decryptAllSecrets: (secrets: Secret[]) => Promise<Record<string, string> | null>;
+  decryptAllSecrets: (
+    secrets: Secret[],
+  ) => Promise<Record<string, string> | null>;
   clearDecryptedSecrets: () => void;
   authenticate: () => Promise<boolean>;
   setupPin: (pin: string) => Promise<void>;
@@ -74,7 +95,9 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [secrets, setSecrets] = useState<Secret[]>([]);
-  const [decryptedSecrets, setDecryptedSecrets] = useState<Record<string, string>>({});
+  const [decryptedSecrets, setDecryptedSecrets] = useState<
+    Record<string, string>
+  >({});
   const [encryptionKey, setEncryptionKeyState] = useState<string | null>(null);
   const [hasPinSetup, setHasPinSetup] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -153,40 +176,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return null;
   }, [encryptionKey]);
 
-  const resolveOrCreateEncryptionKey = useCallback(async (): Promise<string> => {
-    const existingKey = await resolveEncryptionKey();
-    if (existingKey) return existingKey;
-    const newKey = await generateEncryptionKey();
-    await setEncryptionKey(newKey);
-    setEncryptionKeyState(newKey);
-    return newKey;
-  }, [resolveEncryptionKey]);
+  const resolveOrCreateEncryptionKey =
+    useCallback(async (): Promise<string> => {
+      const existingKey = await resolveEncryptionKey();
+      if (existingKey) return existingKey;
+      const newKey = await generateEncryptionKey();
+      await setEncryptionKey(newKey);
+      setEncryptionKeyState(newKey);
+      return newKey;
+    }, [resolveEncryptionKey]);
 
-  const addSecret = useCallback(async (
-    projectId: string,
-    name: string,
-    description: string | undefined,
-    value: string,
-    expiresAt?: string,
-  ): Promise<string | undefined> => {
-    const key = await resolveOrCreateEncryptionKey();
+  const addSecret = useCallback(
+    async (
+      projectId: string,
+      name: string,
+      description: string | undefined,
+      value: string,
+      expiresAt?: string,
+    ): Promise<string | undefined> => {
+      const key = await resolveOrCreateEncryptionKey();
 
-    const { sealed } = await encryptValue(value, key);
+      const { sealed } = await encryptValue(value, key);
 
-    const newSecret: Secret = {
-      id: randomUUID(),
-      projectId,
-      name,
-      description,
-      sealedData: sealed,
-      expiresAt,
-      createdAt: new Date().toISOString(),
-    };
+      const newSecret: Secret = {
+        id: randomUUID(),
+        projectId,
+        name,
+        description,
+        sealedData: sealed,
+        expiresAt,
+        createdAt: new Date().toISOString(),
+      };
 
-    await addSecretToStorage(newSecret);
-    setSecrets((prev) => [...prev, newSecret]);
-    return newSecret.id;
-  }, [resolveOrCreateEncryptionKey]);
+      await addSecretToStorage(newSecret);
+      setSecrets((prev) => [...prev, newSecret]);
+      return newSecret.id;
+    },
+    [resolveOrCreateEncryptionKey],
+  );
 
   const deleteSecret = useCallback(async (id: string, projectId: string) => {
     await deleteSecretFromStorage(id);
@@ -198,85 +225,99 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const updateSecret = useCallback(async (
-    id: string,
-    name: string,
-    description: string | undefined,
-    value: string,
-    expiresAt?: string,
-  ) => {
-    const key = await resolveEncryptionKey();
-    if (!key) return;
-    
-    const existing = secrets.find((s) => s.id === id);
-    if (!existing) return;
+  const updateSecret = useCallback(
+    async (
+      id: string,
+      name: string,
+      description: string | undefined,
+      value: string,
+      expiresAt?: string,
+    ) => {
+      const key = await resolveEncryptionKey();
+      if (!key) return;
 
-    const { sealed } = await encryptValue(value, key);
-    const updated: Secret = { ...existing, name, description, sealedData: sealed, expiresAt };
+      const existing = secrets.find((s) => s.id === id);
+      if (!existing) return;
 
-    await updateSecretInStorage(updated);
-    setSecrets((prev) => prev.map((s) => s.id === id ? updated : s));
-    setDecryptedSecrets((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  }, [resolveEncryptionKey, secrets]);
+      const { sealed } = await encryptValue(value, key);
+      const updated: Secret = {
+        ...existing,
+        name,
+        description,
+        sealedData: sealed,
+        expiresAt,
+      };
 
-  const duplicateSecret = useCallback(async (secret: Secret, projectId: string) => {
-    const newSecret: Secret = {
-      ...secret,
-      id: randomUUID(),
-      projectId,
-      name: `${secret.name} (copy)`,
-      createdAt: new Date().toISOString(),
-    };
-    await addSecretToStorage(newSecret);
-    setSecrets((prev) => [...prev, newSecret]);
-  }, []);
+      await updateSecretInStorage(updated);
+      setSecrets((prev) => prev.map((s) => (s.id === id ? updated : s)));
+      setDecryptedSecrets((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    },
+    [resolveEncryptionKey, secrets],
+  );
 
-  const decryptSecret = useCallback(async (secret: Secret): Promise<string | null> => {
-    const key = await resolveEncryptionKey();
-    if (!key) return null;
-    
-    try {
-      const decrypted = await decryptValue(
-        secret.sealedData,
-        key
-      );
-      setDecryptedSecrets((prev) => ({ ...prev, [secret.id]: decrypted }));
-      return decrypted;
-    } catch (e) {
-      console.error('Decrypt single secret failed:', e);
-      return null;
-    }
-  }, [resolveEncryptionKey]);
+  const duplicateSecret = useCallback(
+    async (secret: Secret, projectId: string) => {
+      const newSecret: Secret = {
+        ...secret,
+        id: randomUUID(),
+        projectId,
+        name: `${secret.name} (copy)`,
+        createdAt: new Date().toISOString(),
+      };
+      await addSecretToStorage(newSecret);
+      setSecrets((prev) => [...prev, newSecret]);
+    },
+    [],
+  );
 
-  const decryptAllSecrets = useCallback(async (secretsToDecrypt: Secret[]): Promise<Record<string, string> | null> => {
-    const key = await resolveEncryptionKey();
-    if (!key) return null;
-    
-    setIsLoading(true);
-    try {
-      const results: Record<string, string> = {};
-      for (const secret of secretsToDecrypt) {
-        try {
-          const decrypted = await decryptValue(
-            secret.sealedData,
-            key
-          );
-          results[secret.id] = decrypted;
-        } catch (e) {
-          console.error('Decrypt secret failed:', secret.name, e);
-          results[secret.id] = 'Decryption failed';
-        }
+  const decryptSecret = useCallback(
+    async (secret: Secret): Promise<string | null> => {
+      const key = await resolveEncryptionKey();
+      if (!key) return null;
+
+      try {
+        const decrypted = await decryptValue(secret.sealedData, key);
+        setDecryptedSecrets((prev) => ({ ...prev, [secret.id]: decrypted }));
+        return decrypted;
+      } catch (e) {
+        console.error("Decrypt single secret failed:", e);
+        return null;
       }
-      setDecryptedSecrets(results);
-      return results;
-    } finally {
-      setIsLoading(false);
-    }
-  }, [resolveEncryptionKey]);
+    },
+    [resolveEncryptionKey],
+  );
+
+  const decryptAllSecrets = useCallback(
+    async (
+      secretsToDecrypt: Secret[],
+    ): Promise<Record<string, string> | null> => {
+      const key = await resolveEncryptionKey();
+      if (!key) return null;
+
+      setIsLoading(true);
+      try {
+        const results: Record<string, string> = {};
+        for (const secret of secretsToDecrypt) {
+          try {
+            const decrypted = await decryptValue(secret.sealedData, key);
+            results[secret.id] = decrypted;
+          } catch (e) {
+            console.error("Decrypt secret failed:", secret.name, e);
+            results[secret.id] = "Decryption failed";
+          }
+        }
+        setDecryptedSecrets(results);
+        return results;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [resolveEncryptionKey],
+  );
 
   const clearDecryptedSecrets = useCallback(() => {
     setDecryptedSecrets({});
@@ -288,8 +329,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     if (hasHardware && isEnrolled) {
       const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Authenticate to view secrets',
-        cancelLabel: 'Cancel',
+        promptMessage: "Authenticate to view secrets",
+        cancelLabel: "Cancel",
         disableDeviceFallback: true,
       });
       return result.success;
@@ -304,54 +345,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHasPinSetup(true);
   }, []);
 
-  const verifyPinAuth = useCallback(async (pin: string): Promise<PinVerifyResult> => {
-    const hash = await getPinHash();
-    if (!hash) {
-      return { success: false, retryAfterMs: 0, attemptsUntilLockout: 0 };
-    }
+  const verifyPinAuth = useCallback(
+    async (pin: string): Promise<PinVerifyResult> => {
+      const hash = await getPinHash();
+      if (!hash) {
+        return { success: false, retryAfterMs: 0, attemptsUntilLockout: 0 };
+      }
 
-    const now = Date.now();
-    const rateLimitState = await getPinRateLimitState();
+      const now = Date.now();
+      const rateLimitState = await getPinRateLimitState();
 
-    if (rateLimitState.lockoutUntil > now) {
+      if (rateLimitState.lockoutUntil > now) {
+        return {
+          success: false,
+          retryAfterMs: rateLimitState.lockoutUntil - now,
+          attemptsUntilLockout: 0,
+        };
+      }
+
+      const valid = await verifyPin(pin, hash);
+      if (valid) {
+        await clearPinRateLimitState();
+        return {
+          success: true,
+          retryAfterMs: 0,
+          attemptsUntilLockout: PIN_LOCKOUT_THRESHOLD,
+        };
+      }
+
+      const failedAttempts = rateLimitState.failedAttempts + 1;
+
+      if (failedAttempts < PIN_LOCKOUT_THRESHOLD) {
+        await setPinRateLimitState({ failedAttempts, lockoutUntil: 0 });
+        return {
+          success: false,
+          retryAfterMs: 0,
+          attemptsUntilLockout: PIN_LOCKOUT_THRESHOLD - failedAttempts,
+        };
+      }
+
+      const lockoutAttempts = failedAttempts - PIN_LOCKOUT_THRESHOLD + 1;
+      const backoffMs = Math.min(
+        PIN_BACKOFF_MAX_MS,
+        PIN_BACKOFF_BASE_MS * 2 ** (lockoutAttempts - 1),
+      );
+
+      await setPinRateLimitState({
+        failedAttempts,
+        lockoutUntil: now + backoffMs,
+      });
+
       return {
         success: false,
-        retryAfterMs: rateLimitState.lockoutUntil - now,
+        retryAfterMs: backoffMs,
         attemptsUntilLockout: 0,
       };
-    }
-
-    const valid = await verifyPin(pin, hash);
-    if (valid) {
-      await clearPinRateLimitState();
-      return { success: true, retryAfterMs: 0, attemptsUntilLockout: PIN_LOCKOUT_THRESHOLD };
-    }
-
-    const failedAttempts = rateLimitState.failedAttempts + 1;
-
-    if (failedAttempts < PIN_LOCKOUT_THRESHOLD) {
-      await setPinRateLimitState({ failedAttempts, lockoutUntil: 0 });
-      return {
-        success: false,
-        retryAfterMs: 0,
-        attemptsUntilLockout: PIN_LOCKOUT_THRESHOLD - failedAttempts,
-      };
-    }
-
-    const lockoutAttempts = failedAttempts - PIN_LOCKOUT_THRESHOLD + 1;
-    const backoffMs = Math.min(
-      PIN_BACKOFF_MAX_MS,
-      PIN_BACKOFF_BASE_MS * 2 ** (lockoutAttempts - 1),
-    );
-
-    await setPinRateLimitState({ failedAttempts, lockoutUntil: now + backoffMs });
-
-    return {
-      success: false,
-      retryAfterMs: backoffMs,
-      attemptsUntilLockout: 0,
-    };
-  }, []);
+    },
+    [],
+  );
 
   const getPinLockoutRemaining = useCallback(async (): Promise<number> => {
     const rateLimitState = await getPinRateLimitState();
@@ -420,7 +471,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 export function useApp() {
   const context = useContext(AppContext);
   if (!context) {
-    throw new Error('useApp must be used within AppProvider');
+    throw new Error("useApp must be used within AppProvider");
   }
   return context;
 }
