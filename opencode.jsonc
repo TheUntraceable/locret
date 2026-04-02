@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "heroui-native": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+              "npx", "-y", "@heroui/native-mcp@latest"
+      ]
+    },
+  },
+}

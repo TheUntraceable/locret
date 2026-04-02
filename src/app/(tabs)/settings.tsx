@@ -1,0 +1,479 @@
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { View, Text, ScrollView, Pressable, Animated } from 'react-native';
+import { Dialog, Button, useThemeColor } from 'heroui-native';
+import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { router } from 'expo-router';
+import { useApp } from '../../context/AppContext';
+
+const PIN_LENGTH = 6;
+const KEYPAD_BUTTON_SIZE = 68;
+const KEYPAD_GAP = 16;
+
+// PIN Dots component (same as auth screen)
+function PinDots({ filled, error }: { filled: number; error: boolean }) {
+  const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
+  const shakeAnim = useRef(new Animated.Value(0)).current;
+  const dotScales = useRef(Array.from({ length: PIN_LENGTH }, () => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    if (error) {
+      Animated.sequence([
+        Animated.timing(shakeAnim, { toValue: 14, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnim, { toValue: -14, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnim, { toValue: 10, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnim, { toValue: -10, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnim, { toValue: 4, duration: 40, useNativeDriver: true }),
+        Animated.timing(shakeAnim, { toValue: 0, duration: 40, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [error, shakeAnim]);
+
+  useEffect(() => {
+    dotScales.forEach((scale, i) => {
+      Animated.spring(scale, {
+        toValue: i < filled ? 1 : 0,
+        friction: 6,
+        tension: 300,
+        useNativeDriver: true,
+      }).start();
+    });
+  }, [filled, dotScales]);
+
+  const activeColor = error ? themeDanger : themeAccent;
+
+  return (
+    <Animated.View
+      className="flex-row items-center justify-center"
+      style={{ gap: 14, transform: [{ translateX: shakeAnim }] }}
+    >
+      {['d1', 'd2', 'd3', 'd4', 'd5', 'd6'].map((key, i) => (
+        <View key={key} className="items-center justify-center" style={{ width: 13, height: 13 }}>
+          <View
+            className="absolute rounded-full"
+            style={{
+              width: 13,
+              height: 13,
+              borderWidth: 1.5,
+              borderColor: i < filled ? activeColor : `${themeMuted}50`,
+            }}
+          />
+          <Animated.View
+            className="rounded-full"
+            style={{
+              width: 13,
+              height: 13,
+              backgroundColor: activeColor,
+              transform: [{ scale: dotScales[i] }],
+            }}
+          />
+        </View>
+      ))}
+    </Animated.View>
+  );
+}
+
+// Keypad key component (same as auth screen)
+function KeypadKey({
+  onPress,
+  children,
+  variant = 'default',
+}: {
+  onPress: () => void;
+  children: React.ReactNode;
+  variant?: 'default' | 'accent' | 'ghost';
+}) {
+  const [themeAccent, themeSurface] = useThemeColor(['accent', 'surface']);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      className="items-center justify-center rounded-2xl"
+      style={({ pressed }) => ({
+        width: KEYPAD_BUTTON_SIZE,
+        height: KEYPAD_BUTTON_SIZE,
+        backgroundColor: variant === 'ghost'
+          ? (pressed ? `${themeSurface}80` : 'transparent')
+          : variant === 'accent'
+          ? (pressed ? `${themeAccent}30` : `${themeAccent}15`)
+          : (pressed ? `${themeSurface}` : `${themeSurface}90`),
+      })}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+// Full-screen Change PIN flow component
+interface ChangePinScreenProps {
+  step: 'current' | 'new' | 'confirm' | 'success';
+  error: string;
+  errorShake: boolean;
+  onCurrentComplete: (pin: string) => void;
+  onNewComplete: (pin: string) => void;
+  onConfirmComplete: (pin: string) => void;
+  onCancel: () => void;
+  onErrorClear: () => void;
+}
+
+function ChangePinScreen({
+  step,
+  error,
+  errorShake,
+  onCurrentComplete,
+  onNewComplete,
+  onConfirmComplete,
+  onCancel,
+  onErrorClear,
+}: ChangePinScreenProps) {
+  const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState(false);
+  const prevStepRef = useRef(step);
+
+  // Reset pin when step changes
+  if (prevStepRef.current !== step) {
+    prevStepRef.current = step;
+    if (pin !== '' || pinError) {
+      setPin('');
+      setPinError(false);
+    }
+  }
+
+  // Handle shake animation on error
+  useEffect(() => {
+    if (errorShake) {
+      setPinError(true);
+      const timeout = setTimeout(() => {
+        setPin('');
+        setPinError(false);
+        onErrorClear();
+      }, 600);
+      return () => clearTimeout(timeout);
+    }
+  }, [errorShake, onErrorClear]);
+
+  // Auto-submit when PIN is complete
+  useEffect(() => {
+    if (pin.length === PIN_LENGTH) {
+      if (step === 'current') onCurrentComplete(pin);
+      else if (step === 'new') onNewComplete(pin);
+      else if (step === 'confirm') onConfirmComplete(pin);
+    }
+  }, [pin, step, onCurrentComplete, onNewComplete, onConfirmComplete]);
+
+  const handleKeyPress = useCallback((key: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPinError(false);
+    setPin((prev) => {
+      if (prev.length >= PIN_LENGTH) return prev;
+      return prev + key;
+    });
+  }, []);
+
+  const handleDelete = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPin((prev) => prev.slice(0, -1));
+  }, []);
+
+  const titles: Record<string, string> = {
+    current: 'Enter Current PIN',
+    new: 'Enter New PIN',
+    confirm: 'Confirm New PIN',
+    success: 'PIN Updated',
+  };
+
+  const subtitles: Record<string, string> = {
+    current: 'Verify your identity to continue',
+    new: 'Choose a 6-digit PIN',
+    confirm: 'Enter your new PIN again',
+    success: 'Your PIN has been changed',
+  };
+
+  if (step === 'success') {
+    return (
+      <View className="flex-1 bg-background items-center justify-center">
+        <View className="items-center gap-4">
+          <Ionicons name="checkmark-circle" size={72} color="#22c55e" />
+          <Text className="text-2xl font-bold text-foreground">{titles[step]}</Text>
+          <Text className="text-sm text-muted">{subtitles[step]}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View className="flex-1 bg-background">
+      <View className="flex-1 items-center justify-between pb-10">
+        {/* Header */}
+        <View className="items-center pt-20 gap-2">
+          <View className="w-16 h-16 rounded-full bg-surface items-center justify-center mb-3">
+            <Ionicons
+              name={step === 'current' ? 'shield-checkmark-outline' : 'key-outline'}
+              size={30}
+              color={themeAccent}
+            />
+          </View>
+          <Text className="text-2xl font-bold text-foreground">{titles[step]}</Text>
+          <Text className="text-sm text-muted">{subtitles[step]}</Text>
+        </View>
+
+        {/* PIN Dots */}
+        <View className="items-center gap-4">
+          <PinDots filled={pin.length} error={pinError} />
+          <View style={{ height: 20, justifyContent: 'center' }}>
+            {(pinError || error) && (
+              <Text className="text-xs font-semibold" style={{ color: themeDanger }}>{error}</Text>
+            )}
+          </View>
+        </View>
+
+        {/* Keypad */}
+        <View className="items-center" style={{ gap: KEYPAD_GAP }}>
+          {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']].map((row) => (
+            <View key={row.join('')} className="flex-row" style={{ gap: KEYPAD_GAP }}>
+              {row.map((num) => (
+                <KeypadKey key={num} onPress={() => handleKeyPress(num)}>
+                  <Text className="text-2xl font-semibold text-foreground">{num}</Text>
+                </KeypadKey>
+              ))}
+            </View>
+          ))}
+          <View className="flex-row" style={{ gap: KEYPAD_GAP }}>
+            <View style={{ width: KEYPAD_BUTTON_SIZE, height: KEYPAD_BUTTON_SIZE }} />
+            <KeypadKey onPress={() => handleKeyPress('0')}>
+              <Text className="text-2xl font-semibold text-foreground">0</Text>
+            </KeypadKey>
+            {pin.length > 0 ? (
+              <KeypadKey onPress={handleDelete} variant="ghost">
+                <Ionicons name="backspace-outline" size={24} color={themeMuted} />
+              </KeypadKey>
+            ) : (
+              <View style={{ width: KEYPAD_BUTTON_SIZE, height: KEYPAD_BUTTON_SIZE }} />
+            )}
+          </View>
+        </View>
+
+        {/* Footer */}
+        <View className="items-center" style={{ minHeight: 20 }}>
+          <Pressable onPress={onCancel} className="py-2 px-4">
+            <Text className="text-sm text-muted">Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export default function SettingsTab() {
+  const { hasPinSetup, verifyPinAuth, setupPin, resetApp, initializeApp, projects, lockApp } = useApp();
+  const [themeAccent, themeDanger, themeMuted] = useThemeColor(['accent', 'danger', 'muted']);
+
+  const [showChangePinFlow, setShowChangePinFlow] = useState(false);
+  const [showResetDialog, setShowResetDialog] = useState(false);
+
+  // Change PIN state
+  type PinStep = 'current' | 'new' | 'confirm' | 'success';
+  const [pinStep, setPinStep] = useState<PinStep>('current');
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pinErrorShake, setPinErrorShake] = useState(false);
+
+  const resetPinForm = useCallback(() => {
+    setCurrentPin('');
+    setNewPin('');
+    setPinError('');
+    setPinErrorShake(false);
+    setPinStep('current');
+  }, []);
+
+  const handleCurrentPinComplete = useCallback(async (enteredPin: string) => {
+    const valid = await verifyPinAuth(enteredPin);
+    if (valid) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setCurrentPin(enteredPin);
+      setPinStep('new');
+      setPinError('');
+    } else {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setPinError('Incorrect PIN');
+      setPinErrorShake(true);
+    }
+  }, [verifyPinAuth]);
+
+  const handleNewPinComplete = useCallback(async (enteredPin: string) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setNewPin(enteredPin);
+    setPinStep('confirm');
+    setPinError('');
+  }, []);
+
+  const handleConfirmPinComplete = useCallback(async (enteredPin: string) => {
+    if (enteredPin === newPin) {
+      await setupPin(enteredPin);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setPinStep('success');
+      setTimeout(() => {
+        setShowChangePinFlow(false);
+        resetPinForm();
+      }, 1200);
+    } else {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setPinError('PINs do not match');
+      setPinErrorShake(true);
+    }
+  }, [newPin, setupPin, resetPinForm]);
+
+  const handleResetApp = useCallback(async () => {
+    await resetApp();
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    await initializeApp();
+    setShowResetDialog(false);
+  }, [resetApp, initializeApp]);
+
+  const handleLockApp = useCallback(async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    lockApp();
+    router.replace('/auth');
+  }, [lockApp]);
+
+  // Full-screen Change PIN flow
+  if (showChangePinFlow) {
+    return (
+      <ChangePinScreen
+        step={pinStep}
+        error={pinError}
+        errorShake={pinErrorShake}
+        onCurrentComplete={handleCurrentPinComplete}
+        onNewComplete={handleNewPinComplete}
+        onConfirmComplete={handleConfirmPinComplete}
+        onCancel={() => { setShowChangePinFlow(false); resetPinForm(); }}
+        onErrorClear={() => setPinErrorShake(false)}
+      />
+    );
+  }
+
+  return (
+    <View className="flex-1 bg-background">
+      <View className="px-5 pt-14 pb-3">
+        <Text className="text-3xl font-bold text-foreground">Settings</Text>
+        <Text className="text-sm text-muted mt-1">Manage your vault</Text>
+      </View>
+
+      <ScrollView className="flex-1 px-5" showsVerticalScrollIndicator={false}>
+        <View className="gap-1 pb-28">
+          {/* Security Section */}
+          <Text className="text-xs font-semibold text-muted uppercase tracking-wider mt-4 mb-2 px-1">Security</Text>
+
+          <Pressable
+            onPress={() => { resetPinForm(); setShowChangePinFlow(true); }}
+            className="flex-row items-center justify-between bg-surface rounded-xl px-4 py-4"
+          >
+            <View className="flex-row items-center gap-3">
+              <Ionicons name="keypad-outline" size={20} color={themeAccent} />
+              <View>
+                <Text className="text-base text-foreground">Change PIN</Text>
+                <Text className="text-xs text-muted">Update your authentication PIN</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={themeMuted} />
+          </Pressable>
+
+          <View className="h-1" />
+
+          <Pressable
+            onPress={handleLockApp}
+            className="flex-row items-center justify-between bg-surface rounded-xl px-4 py-4"
+          >
+            <View className="flex-row items-center gap-3">
+              <Ionicons name="lock-closed-outline" size={20} color={themeAccent} />
+              <View>
+                <Text className="text-base text-foreground">Lock App</Text>
+                <Text className="text-xs text-muted">Clear sensitive data from memory</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={themeMuted} />
+          </Pressable>
+
+          {/* Data Section */}
+          <Text className="text-xs font-semibold text-muted uppercase tracking-wider mt-6 mb-2 px-1">Data</Text>
+
+          <View className="bg-surface rounded-xl px-4 py-4">
+            <View className="flex-row items-center gap-3">
+              <Ionicons name="folder-outline" size={20} color={themeAccent} />
+              <View>
+                <Text className="text-base text-foreground">Projects</Text>
+                <Text className="text-xs text-muted">{projects.length} {projects.length === 1 ? 'project' : 'projects'} in your vault</Text>
+              </View>
+            </View>
+          </View>
+
+          <View className="h-1" />
+
+          <Pressable
+            onPress={() => setShowResetDialog(true)}
+            className="flex-row items-center justify-between bg-surface rounded-xl px-4 py-4"
+          >
+            <View className="flex-row items-center gap-3">
+              <Ionicons name="warning-outline" size={20} color={themeDanger} />
+              <View>
+                <Text className="text-base" style={{ color: themeDanger }}>Reset App</Text>
+                <Text className="text-xs text-muted">Erase all data and start fresh</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={themeMuted} />
+          </Pressable>
+
+          {/* About Section */}
+          <Text className="text-xs font-semibold text-muted uppercase tracking-wider mt-6 mb-2 px-1">About</Text>
+
+          <View className="bg-surface rounded-xl px-4 py-4 gap-3">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted">Version</Text>
+              <Text className="text-sm text-foreground">1.0.0</Text>
+            </View>
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted">Encryption</Text>
+              <Text className="text-sm text-foreground">AES-256-GCM</Text>
+            </View>
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted">Key Storage</Text>
+              <Text className="text-sm text-foreground">Hardware-backed</Text>
+            </View>
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted">PIN Setup</Text>
+              <Text className="text-sm text-foreground">{hasPinSetup ? 'Configured' : 'Not set'}</Text>
+            </View>
+          </View>
+        </View>
+      </ScrollView>
+
+      {/* Reset App Dialog */}
+      <Dialog isOpen={showResetDialog} onOpenChange={setShowResetDialog}>
+        <Dialog.Portal>
+          <Dialog.Overlay />
+          <Dialog.Content>
+            <View className="gap-4">
+              <View className="flex-row items-center justify-between">
+                <Dialog.Title>Reset App?</Dialog.Title>
+                <Dialog.Close variant="ghost" />
+              </View>
+              <Dialog.Description>
+                This will permanently erase all projects, secrets, your encryption key, and PIN. You will need to set up again from scratch. This cannot be undone.
+              </Dialog.Description>
+              <View className="flex-row gap-3 justify-end">
+                <Button variant="ghost" size="sm" onPress={() => setShowResetDialog(false)}>
+                  <Button.Label>Cancel</Button.Label>
+                </Button>
+                <Button variant="danger" size="sm" onPress={handleResetApp}>
+                  <Button.Label>Erase Everything</Button.Label>
+                </Button>
+              </View>
+            </View>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog>
+    </View>
+  );
+}

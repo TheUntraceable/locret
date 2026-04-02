@@ -1,5 +1,23 @@
 @layer theme {
   :root {
+    @variant light {
+      --font-normal: 'Inter-Regular';
+      --font-medium: 'Inter-Medium';
+      --font-semibold: 'Inter-SemiBold';
+      --font-bold: 'Inter-Bold';
+
+      --radius: 0.5rem;
+    }
+
+    @variant dark {
+      --font-normal: 'Inter-Regular';
+      --font-medium: 'Inter-Medium';
+      --font-semibold: 'Inter-SemiBold';
+      --font-bold: 'Inter-Bold';
+
+      --radius: 0.5rem;
+    }
+
     @variant alpha-light {
       --font-normal: 'Inter-Regular';
       --font-medium: 'Inter-Medium';
@@ -25,7 +43,6 @@
       /* Overlay: Used for floating/overlay components (dialogs, popovers, modals, menus) */
       --overlay: var(--white);
       --overlay-foreground: var(--foreground);
-      --backdrop: oklch(0% 0 0 / 20%);
 
       --muted: var(--color-neutral-500);
 
@@ -39,7 +56,7 @@
       --field-background: var(--default);
       --field-foreground: var(--foreground);
       --field-placeholder: var(--muted);
-      --field-border: transparent;
+      --field-border: var(--color-neutral-200);
 
       /* Status Colors */
       --success: oklch(0.5503 0.1244 153.56);
@@ -98,7 +115,6 @@
       /* Overlay: Used for floating/overlay components (dialogs, popovers, modals, menus) */
       --overlay: var(--color-neutral-800);
       --overlay-foreground: var(--foreground);
-      --backdrop: oklch(0% 0 0 / 20%);
 
       --muted: var(--color-neutral-400);
 
@@ -112,7 +128,7 @@
       --field-background: var(--default);
       --field-foreground: var(--foreground);
       --field-placeholder: var(--muted);
-      --field-border: transparent;
+      --field-border: var(--color-neutral-700);
 
       /* Status Colors */
       --success: oklch(0.5503 0.1244 153.56);

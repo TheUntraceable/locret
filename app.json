@@ -1,16 +1,17 @@
 {
   "expo": {
-    "name": "HeroUI Native Example",
-    "slug": "heroui-native-example",
+    "name": "Local Secrets",
+    "slug": "local-secrets-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "heroui-native-example",
+    "scheme": "localsecrets",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.localsecrets.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -39,11 +40,18 @@
       ],
       "expo-font",
       "expo-image",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d046b809-a1c2-4265-9dd0-a540dc27ab5c"
+      }
     }
   }
 }

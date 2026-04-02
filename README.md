@@ -1,57 +1,37 @@
-# HeroUI Native Example App
+# Local Secrets
 
-This is a React Native (Expo 54) project with [HeroUI Native](https://github.com/heroui-inc/heroui-native) - a modern UI library that provides beautiful and customizable components for React Native applications.
+A secure, offline-first secrets manager for mobile. Store and encrypt your secrets locally with biometric authentication.
 
-## Get started
+## Features
 
-1. Clone the repository
+- **AES-256-GCM encryption** — all secret values are encrypted at rest
+- **Hardware-backed key storage** — encryption keys stored in SecureStore (iOS Keychain / Android Keystore)
+- **Biometric authentication** — Face ID / Touch ID / fingerprint to access secrets
+- **PIN fallback** — set a PIN for when biometrics aren't available
+- **Projects** — organize secrets into named projects
+- **Decrypt All** — reveal all secrets in a project with confirmation + biometric check
 
-   ```bash
-   git clone https://github.com/heroui-inc/heroui-native-example.git
-   cd heroui-native-example
-   ```
+## Tech Stack
 
-2. Install dependencies
+- **Expo** (SDK 55) with Expo Router
+- **HeroUI Native** — UI components
+- **expo-crypto** — AES-256-GCM encryption
+- **expo-secure-store** — hardware-backed key storage
+- **expo-local-authentication** — biometric auth
+- **@react-native-async-storage/async-storage** — encrypted data storage
 
-   ```bash
-   npm install
-   ```
-
-3. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-4. (Optional) Clean git history for a fresh start
-
-   ```bash
-   rm -rf .git
-   git init
-   git add .
-   git commit -m "Initial commit"
-   ```
-
-You can start developing by editing the files inside the **src/app** directory. This project uses file-based routing with Expo Router.
-
-## Get a fresh project
-
-When you're ready to start with a clean slate, run:
+## Get Started
 
 ```bash
-npm run reset-project
+npm install
+npx expo start
 ```
 
-This command will move the current **src** directory to **app-example-src** and create a new **src/app** directory with basic HeroUI Native setup where you can start developing.
+## Security Model
 
-## About HeroUI Native
-
-HeroUI Native is a comprehensive UI library built for React Native that provides:
-
-- Beautiful, accessible components out of the box
-- Consistent design system
-- TypeScript support
-- Customizable theming
-- Modern styling with NativeWind/Tailwind CSS
-
-Learn more about HeroUI Native at: https://github.com/heroui-inc/heroui-native
+| What | Where | Why |
+|------|-------|-----|
+| Encryption key | SecureStore | Hardware-backed, OS-level protection |
+| Encrypted values | AsyncStorage | Unreadable without the key |
+| PIN hash | SecureStore | SHA-256 hash, never stored in plaintext |
+| Project/secret metadata | AsyncStorage | Names and descriptions (no sensitive data) |
