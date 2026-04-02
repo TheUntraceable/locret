@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Locret",
-    "slug": "locret",
+    "slug": "local-secrets-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./icon.png",
