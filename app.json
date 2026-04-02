@@ -1,28 +1,26 @@
 {
   "expo": {
-    "name": "Local Secrets",
-    "slug": "local-secrets-app",
+    "name": "Locret",
+    "slug": "locret",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "localsecrets",
+    "icon": "./icon.png",
+    "scheme": "locret",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true
     },
     "android": {
-      "package": "com.localsecrets.app",
+      "package": "com.locret.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./icon.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./icon.png"
     },
     "plugins": [
       "expo-router",

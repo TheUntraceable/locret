@@ -1,4 +1,4 @@
-# Local Secrets
+# Locret
 
 A secure, offline-first secrets manager for mobile. Store and encrypt your secrets locally with biometric authentication.
 
