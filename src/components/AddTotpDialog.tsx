@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { Dialog, Button, TextField, Input, Label, useThemeColor } from 'heroui-native';
@@ -21,35 +21,70 @@ interface AddTotpDialogProps {
 export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount }: AddTotpDialogProps) {
   const isEditing = !!editAccount;
   const [mode, setMode] = useState<Mode>('scan');
-  const [issuer, setIssuer] = useState('');
-  const [accountName, setAccountName] = useState('');
-  const [secret, setSecret] = useState('');
+  const issuerRef = useRef('');
+  const accountNameRef = useRef('');
+  const secretRef = useRef('');
+  const issuerInputRef = useRef<any>(null);
+  const accountNameInputRef = useRef<any>(null);
+  const secretInputRef = useRef<any>(null);
   const [secretError, setSecretError] = useState('');
   const [scanError, setScanError] = useState('');
   const [hasScanned, setHasScanned] = useState(false);
+  const [canManualSubmit, setCanManualSubmit] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
   const scanLockRef = useRef(false);
+  const hasInitializedRef = useRef(false);
+  const prevIsOpenRef = useRef(isOpen);
+  const prevEditIdRef = useRef<string | null>(editAccount?.id ?? null);
+
+  const updateCanManualSubmit = useCallback(() => {
+    const hasIssuer = issuerRef.current.trim() !== '';
+    const hasAccountName = accountNameRef.current.trim() !== '';
+    const hasSecret = secretRef.current.trim() !== '';
+    setCanManualSubmit(hasIssuer && hasAccountName && (isEditing || hasSecret));
+  }, [isEditing]);
 
   useEffect(() => {
-    if (isOpen && isEditing && editAccount) {
-      setIssuer(editAccount.issuer);
-      setAccountName(editAccount.accountName);
-      setSecret('');
+    const currentEditId = editAccount?.id ?? null;
+    const openedNow = isOpen && !prevIsOpenRef.current;
+    const changedEditTargetWhileOpen = isOpen && currentEditId !== prevEditIdRef.current;
+
+    if (openedNow || changedEditTargetWhileOpen) {
+      hasInitializedRef.current = false;
+    }
+
+    if (isOpen && !hasInitializedRef.current) {
+      if (isEditing && editAccount) {
+        issuerRef.current = editAccount.issuer;
+        accountNameRef.current = editAccount.accountName;
+        secretRef.current = '';
+        issuerInputRef.current?.setNativeProps?.({ text: issuerRef.current });
+        accountNameInputRef.current?.setNativeProps?.({ text: accountNameRef.current });
+        secretInputRef.current?.setNativeProps?.({ text: '' });
+        setCanManualSubmit(true);
+      } else {
+        issuerRef.current = '';
+        accountNameRef.current = '';
+        secretRef.current = '';
+        issuerInputRef.current?.setNativeProps?.({ text: '' });
+        accountNameInputRef.current?.setNativeProps?.({ text: '' });
+        secretInputRef.current?.setNativeProps?.({ text: '' });
+        setCanManualSubmit(false);
+      }
+
       setSecretError('');
       setScanError('');
       setHasScanned(false);
       setMode('scan');
+      hasInitializedRef.current = true;
     } else if (!isOpen) {
-      setMode('scan');
-      setIssuer('');
-      setAccountName('');
-      setSecret('');
-      setSecretError('');
-      setScanError('');
-      setHasScanned(false);
+      hasInitializedRef.current = false;
       scanLockRef.current = false;
     }
+
+    prevIsOpenRef.current = isOpen;
+    prevEditIdRef.current = currentEditId;
   }, [isOpen, isEditing, editAccount]);
 
   useEffect(() => {
@@ -80,11 +115,16 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
   };
 
   const handleSecretChange = (text: string) => {
-    setSecret(text);
+    secretRef.current = text;
     if (secretError) setSecretError('');
+    updateCanManualSubmit();
   };
 
   const handleManualSubmit = async () => {
+    const issuer = issuerRef.current;
+    const accountName = accountNameRef.current;
+    const secret = secretRef.current;
+
     if (!issuer.trim() || !accountName.trim()) return;
 
     if (isEditing && editAccount && onEdit) {
@@ -152,7 +192,7 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
           ) : null}
         </View>
         <Text className="text-sm text-muted text-center">
-          Point your camera at the QR code from your account's 2FA setup page
+          Point your camera at the QR code from your account&apos;s 2FA setup page
         </Text>
       </View>
     );
@@ -163,8 +203,12 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
       <TextField>
         <Label>Service / Issuer</Label>
         <Input
-          value={issuer}
-          onChangeText={setIssuer}
+          ref={issuerInputRef}
+          defaultValue={issuerRef.current}
+          onChangeText={(text) => {
+            issuerRef.current = text;
+            updateCanManualSubmit();
+          }}
           placeholder="e.g., GitHub, Google"
           autoFocus={isEditing}
         />
@@ -172,8 +216,12 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
       <TextField>
         <Label>Account Name</Label>
         <Input
-          value={accountName}
-          onChangeText={setAccountName}
+          ref={accountNameInputRef}
+          defaultValue={accountNameRef.current}
+          onChangeText={(text) => {
+            accountNameRef.current = text;
+            updateCanManualSubmit();
+          }}
           placeholder="e.g., user@example.com"
           autoCapitalize="none"
           autoFocus={!isEditing}
@@ -183,7 +231,8 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
       <TextField isInvalid={!!secretError}>
         <Label>Secret Key</Label>
         <Input
-          value={secret}
+          ref={secretInputRef}
+          defaultValue={secretRef.current}
           onChangeText={handleSecretChange}
           placeholder="e.g., JBSWY3DPEHPK3PXP"
           autoCapitalize="characters"
@@ -199,7 +248,7 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
       <Button
         variant="primary"
         onPress={handleManualSubmit}
-        isDisabled={!issuer.trim() || !accountName.trim() || (!isEditing && !secret.trim())}
+        isDisabled={!canManualSubmit}
       >
         <Button.Label>{isEditing ? 'Save Changes' : 'Add Account'}</Button.Label>
       </Button>

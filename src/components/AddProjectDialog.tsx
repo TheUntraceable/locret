@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { Dialog, Button, TextField, Input, Label } from 'heroui-native';
@@ -12,13 +12,30 @@ interface AddProjectDialogProps {
 
 export function AddProjectDialog({ isOpen, onOpenChange }: AddProjectDialogProps) {
   const { addProject } = useApp();
-  const [name, setName] = useState('');
+  const nameRef = useRef('');
+  const nameInputRef = useRef<any>(null);
+  const [canSubmit, setCanSubmit] = useState(false);
+
+  const updateCanSubmit = useCallback(() => {
+    setCanSubmit(nameRef.current.trim() !== '');
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      nameRef.current = '';
+      nameInputRef.current?.setNativeProps?.({ text: '' });
+      setCanSubmit(false);
+    }
+  }, [isOpen]);
 
   const handleAdd = async () => {
+    const name = nameRef.current;
     if (!name.trim()) return;
     await addProject(name.trim());
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setName('');
+    nameRef.current = '';
+    nameInputRef.current?.setNativeProps?.({ text: '' });
+    setCanSubmit(false);
     onOpenChange(false);
   };
 
@@ -39,8 +56,12 @@ export function AddProjectDialog({ isOpen, onOpenChange }: AddProjectDialogProps
               <TextField>
                 <Label>Project Name</Label>
                 <Input
-                  value={name}
-                  onChangeText={setName}
+                  ref={nameInputRef}
+                  defaultValue={nameRef.current}
+                  onChangeText={(text) => {
+                    nameRef.current = text;
+                    updateCanSubmit();
+                  }}
                   placeholder="e.g., Work Secrets"
                   autoFocus
                 />
@@ -48,7 +69,7 @@ export function AddProjectDialog({ isOpen, onOpenChange }: AddProjectDialogProps
               <Button
                 variant="primary"
                 onPress={handleAdd}
-                isDisabled={!name.trim()}
+                isDisabled={!canSubmit}
               >
                 <Button.Label>Create Project</Button.Label>
               </Button>

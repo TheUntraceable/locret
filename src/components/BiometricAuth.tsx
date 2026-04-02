@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { Dialog, Button, Input, Label, TextField } from 'heroui-native';
@@ -23,14 +23,42 @@ export function BiometricAuth({
 }: BiometricAuthProps) {
   const { authenticate, hasPinSetup, verifyPinAuth, setupPin, markAuthenticated, resetApp, initializeApp } = useApp();
   const [mode, setMode] = useState<'choose' | 'biometric' | 'pin' | 'pin-setup' | 'forgot-pin'>('choose');
-  const [pin, setPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
+  const pinRef = useRef('');
+  const confirmPinRef = useRef('');
+  const pinInputRef = useRef<any>(null);
+  const confirmPinInputRef = useRef<any>(null);
+  const [canSubmitPin, setCanSubmitPin] = useState(false);
+  const [canSubmitPinSetup, setCanSubmitPinSetup] = useState(false);
   const [pinError, setPinError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
+  const hasInitializedRef = useRef(false);
+  const prevIsOpenRef = useRef(isOpen);
+
+  const updatePinSubmitState = useCallback(() => {
+    setCanSubmitPin(pinRef.current.length > 0);
+  }, []);
+
+  const updatePinSetupSubmitState = useCallback(() => {
+    setCanSubmitPinSetup(pinRef.current.length > 0 && confirmPinRef.current.length > 0);
+  }, []);
+
+  const clearPinFields = useCallback(() => {
+    pinRef.current = '';
+    confirmPinRef.current = '';
+    pinInputRef.current?.setNativeProps?.({ text: '' });
+    confirmPinInputRef.current?.setNativeProps?.({ text: '' });
+    setCanSubmitPin(false);
+    setCanSubmitPinSetup(false);
+  }, []);
 
   useEffect(() => {
-    if (isOpen) {
+    const openedNow = isOpen && !prevIsOpenRef.current;
+    if (openedNow) {
+      hasInitializedRef.current = false;
+    }
+
+    if (isOpen && !hasInitializedRef.current) {
       (async () => {
         const hasHardware = await LocalAuthentication.hasHardwareAsync();
         const isEnrolled = await LocalAuthentication.isEnrolledAsync();
@@ -43,9 +71,20 @@ export function BiometricAuth({
         } else {
           setMode('pin');
         }
+        clearPinFields();
+        setPinError('');
+        hasInitializedRef.current = true;
       })();
+    } else {
+      if (!isOpen) {
+        hasInitializedRef.current = false;
+        clearPinFields();
+        setPinError('');
+      }
     }
-  }, [isOpen, hasPinSetup]);
+
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, hasPinSetup, clearPinFields]);
 
   const handleBiometricAuth = useCallback(async () => {
     setIsAuthenticating(true);
@@ -66,6 +105,7 @@ export function BiometricAuth({
   }, [authenticate, onSuccess, onOpenChange, markAuthenticated]);
 
   const handlePinAuth = useCallback(async () => {
+    const pin = pinRef.current;
     if (!pin) return;
     setIsAuthenticating(true);
     try {
@@ -75,7 +115,7 @@ export function BiometricAuth({
         markAuthenticated();
         onSuccess();
         onOpenChange(false);
-        setPin('');
+        clearPinFields();
         setPinError('');
       } else {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -84,9 +124,12 @@ export function BiometricAuth({
     } finally {
       setIsAuthenticating(false);
     }
-  }, [pin, verifyPinAuth, onSuccess, onOpenChange, markAuthenticated]);
+  }, [verifyPinAuth, onSuccess, onOpenChange, markAuthenticated, clearPinFields]);
 
   const handlePinSetup = useCallback(async () => {
+    const pin = pinRef.current;
+    const confirmPin = confirmPinRef.current;
+
     if (pin.length !== PIN_LENGTH) {
       setPinError(`PIN must be ${PIN_LENGTH} digits`);
       return;
@@ -101,23 +144,21 @@ export function BiometricAuth({
       markAuthenticated();
       onSuccess();
       onOpenChange(false);
-      setPin('');
-      setConfirmPin('');
+      clearPinFields();
       setPinError('');
       return;
     }
     setPinError('');
-  }, [pin, confirmPin, mode, setupPin, onSuccess, onOpenChange, markAuthenticated]);
+  }, [mode, setupPin, onSuccess, onOpenChange, markAuthenticated, clearPinFields]);
 
   const handleResetApp = useCallback(async () => {
     await resetApp();
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     await initializeApp();
     setMode('pin-setup');
-    setPin('');
-    setConfirmPin('');
+    clearPinFields();
     setPinError('');
-  }, [resetApp, initializeApp]);
+  }, [resetApp, initializeApp, clearPinFields]);
 
   return (
     <Dialog isOpen={isOpen} onOpenChange={() => {}}>
@@ -159,8 +200,13 @@ export function BiometricAuth({
                   <TextField isInvalid={!!pinError}>
                     <Label>PIN</Label>
                     <Input
-                      value={pin}
-                      onChangeText={(t) => { setPin(t); setPinError(''); }}
+                      ref={pinInputRef}
+                      defaultValue={pinRef.current}
+                      onChangeText={(t) => {
+                        pinRef.current = t;
+                        setPinError('');
+                        updatePinSubmitState();
+                      }}
                       secureTextEntry
                       keyboardType="number-pad"
                       placeholder="Enter your PIN"
@@ -171,7 +217,7 @@ export function BiometricAuth({
                   <Button
                     variant="primary"
                     onPress={handlePinAuth}
-                    isDisabled={isAuthenticating || !pin}
+                    isDisabled={isAuthenticating || !canSubmitPin}
                   >
                     <Button.Label>Verify PIN</Button.Label>
                   </Button>
@@ -204,8 +250,13 @@ export function BiometricAuth({
                   <TextField isInvalid={!!pinError}>
                     <Label>PIN</Label>
                     <Input
-                      value={pin}
-                      onChangeText={(t) => { setPin(t); setPinError(''); }}
+                      ref={pinInputRef}
+                      defaultValue={pinRef.current}
+                      onChangeText={(t) => {
+                        pinRef.current = t;
+                        setPinError('');
+                        updatePinSetupSubmitState();
+                      }}
                       secureTextEntry
                       keyboardType="number-pad"
                         placeholder={`Enter ${PIN_LENGTH}-digit PIN`}
@@ -215,8 +266,13 @@ export function BiometricAuth({
                   <TextField isInvalid={!!pinError}>
                     <Label>Confirm PIN</Label>
                     <Input
-                      value={confirmPin}
-                      onChangeText={(t) => { setConfirmPin(t); setPinError(''); }}
+                      ref={confirmPinInputRef}
+                      defaultValue={confirmPinRef.current}
+                      onChangeText={(t) => {
+                        confirmPinRef.current = t;
+                        setPinError('');
+                        updatePinSetupSubmitState();
+                      }}
                       secureTextEntry
                       keyboardType="number-pad"
                       placeholder="Confirm your PIN"
@@ -226,7 +282,7 @@ export function BiometricAuth({
                   <Button
                     variant="primary"
                     onPress={handlePinSetup}
-                    isDisabled={isAuthenticating || !pin || !confirmPin}
+                    isDisabled={isAuthenticating || !canSubmitPinSetup}
                   >
                     <Button.Label>Set PIN</Button.Label>
                   </Button>
