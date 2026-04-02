@@ -1,114 +1,16 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, Pressable, Animated } from 'react-native';
+import { useState, useCallback, useEffect } from 'react';
+import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { Button, useThemeColor } from 'heroui-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useApp } from '../context/AppContext';
+import { PinDots, KeypadKey } from '../components/PinPad';
 
 const PIN_LENGTH = 6;
 const KEYPAD_BUTTON_SIZE = 68;
 const KEYPAD_GAP = 16;
-
-function PinDots({ count, filled, error }: { count: number; filled: number; error: boolean }) {
-  const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-  const dotScales = useRef(Array.from({ length: 8 }, () => new Animated.Value(0))).current;
-
-  useEffect(() => {
-    if (error) {
-      Animated.sequence([
-        Animated.timing(shakeAnim, { toValue: 14, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: -14, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: 10, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: -10, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: 4, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: 0, duration: 40, useNativeDriver: true }),
-      ]).start();
-    }
-  }, [error, shakeAnim]);
-
-  // Animate dot fill
-  useEffect(() => {
-    dotScales.forEach((scale, i) => {
-      Animated.spring(scale, {
-        toValue: i < filled ? 1 : 0,
-        friction: 6,
-        tension: 300,
-        useNativeDriver: true,
-      }).start();
-    });
-  }, [filled, dotScales]);
-
-  const activeColor = error ? themeDanger : themeAccent;
-
-  return (
-    <Animated.View
-      className="flex-row items-center justify-center"
-      style={{ gap: 14, transform: [{ translateX: shakeAnim }] }}
-    >
-      {Array.from({ length: count }).map((_, i) => (
-        <View
-          key={i}
-          className="items-center justify-center"
-          style={{ width: 13, height: 13 }}
-        >
-          {/* Empty ring */}
-          <View
-            className="absolute rounded-full"
-            style={{
-              width: 13,
-              height: 13,
-              borderWidth: 1.5,
-              borderColor: i < filled ? activeColor : `${themeMuted}50`,
-            }}
-          />
-          {/* Filled center */}
-          <Animated.View
-            className="rounded-full"
-            style={{
-              width: 13,
-              height: 13,
-              backgroundColor: activeColor,
-              transform: [{ scale: dotScales[i] }],
-            }}
-          />
-        </View>
-      ))}
-    </Animated.View>
-  );
-}
-
-function KeypadKey({
-  onPress,
-  children,
-  variant = 'default',
-}: {
-  onPress: () => void;
-  children: React.ReactNode;
-  variant?: 'default' | 'accent' | 'ghost';
-}) {
-  const [themeAccent, themeSurface] = useThemeColor(['accent', 'surface']);
-
-  return (
-    <Pressable
-      onPress={onPress}
-      className="items-center justify-center rounded-2xl"
-      style={({ pressed }) => ({
-        width: KEYPAD_BUTTON_SIZE,
-        height: KEYPAD_BUTTON_SIZE,
-        backgroundColor: variant === 'ghost'
-          ? (pressed ? `${themeSurface}80` : 'transparent')
-          : variant === 'accent'
-          ? (pressed ? `${themeAccent}30` : `${themeAccent}15`)
-          : (pressed ? `${themeSurface}` : `${themeSurface}90`),
-      })}
-    >
-      {children}
-    </Pressable>
-  );
-}
 
 export default function AuthScreen() {
   const {
@@ -134,25 +36,6 @@ export default function AuthScreen() {
     })();
   }, [initializeApp]);
 
-  useEffect(() => {
-    if (!isInitialized) return;
-    (async () => {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-      setBiometricsAvailable(hasHardware && isEnrolled);
-
-      if (!hasPinSetup) {
-        setMode('pin-setup');
-      } else {
-        setMode('auth');
-        if (hasHardware && isEnrolled) {
-          attemptBiometric();
-        }
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isInitialized, hasPinSetup]);
-
   const handleSuccess = useCallback(async () => {
     markAuthenticated();
     await loadProjects();
@@ -170,6 +53,24 @@ export default function AuthScreen() {
       // User can fall back to PIN
     }
   }, [authenticate, handleSuccess]);
+
+  useEffect(() => {
+    if (!isInitialized) return;
+    (async () => {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      setBiometricsAvailable(hasHardware && isEnrolled);
+
+      if (!hasPinSetup) {
+        setMode('pin-setup');
+      } else {
+        setMode('auth');
+        if (hasHardware && isEnrolled) {
+          attemptBiometric();
+        }
+      }
+    })();
+  }, [isInitialized, hasPinSetup, attemptBiometric]);
 
   const handlePinComplete = useCallback(async (enteredPin: string) => {
     if (mode === 'auth') {
@@ -357,10 +258,10 @@ export default function AuthScreen() {
 
           {/* Keypad */}
           <View className="items-center" style={{ gap: KEYPAD_GAP }}>
-            {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']].map((row, ri) => (
-              <View key={ri} className="flex-row" style={{ gap: KEYPAD_GAP }}>
+            {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']].map((row) => (
+              <View key={row.join('')} className="flex-row" style={{ gap: KEYPAD_GAP }}>
                 {row.map((num) => (
-                  <KeypadKey key={num} onPress={() => handleKeyPress(num)}>
+                  <KeypadKey key={num} size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress(num)}>
                     <Text className="text-2xl font-semibold text-foreground">{num}</Text>
                   </KeypadKey>
                 ))}
@@ -369,20 +270,20 @@ export default function AuthScreen() {
             <View className="flex-row" style={{ gap: KEYPAD_GAP }}>
               {/* Bottom-left */}
               {mode === 'auth' && biometricsAvailable ? (
-                <KeypadKey onPress={attemptBiometric} variant="accent">
+                <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={attemptBiometric} variant="accent">
                   <Ionicons name="finger-print" size={26} color={themeAccent} />
                 </KeypadKey>
               ) : (
                 <View style={{ width: KEYPAD_BUTTON_SIZE, height: KEYPAD_BUTTON_SIZE }} />
               )}
 
-              <KeypadKey onPress={() => handleKeyPress('0')}>
+              <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress('0')}>
                 <Text className="text-2xl font-semibold text-foreground">0</Text>
               </KeypadKey>
 
               {/* Bottom-right: delete */}
               {displayLength > 0 ? (
-                <KeypadKey onPress={handleDelete} variant="ghost">
+                <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={handleDelete} variant="ghost">
                   <Ionicons name="backspace-outline" size={24} color={themeMuted} />
                 </KeypadKey>
               ) : (

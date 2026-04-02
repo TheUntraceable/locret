@@ -1,108 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, ScrollView, Pressable, Animated } from 'react-native';
+import { View, Text, ScrollView, Pressable } from 'react-native';
 import { Dialog, Button, useThemeColor } from 'heroui-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useApp } from '../../context/AppContext';
+import { PinDots, KeypadKey } from '../../components/PinPad';
 
 const PIN_LENGTH = 6;
 const KEYPAD_BUTTON_SIZE = 68;
 const KEYPAD_GAP = 16;
-
-// PIN Dots component (same as auth screen)
-function PinDots({ filled, error }: { filled: number; error: boolean }) {
-  const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-  const dotScales = useRef(Array.from({ length: PIN_LENGTH }, () => new Animated.Value(0))).current;
-
-  useEffect(() => {
-    if (error) {
-      Animated.sequence([
-        Animated.timing(shakeAnim, { toValue: 14, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: -14, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: 10, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: -10, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: 4, duration: 40, useNativeDriver: true }),
-        Animated.timing(shakeAnim, { toValue: 0, duration: 40, useNativeDriver: true }),
-      ]).start();
-    }
-  }, [error, shakeAnim]);
-
-  useEffect(() => {
-    dotScales.forEach((scale, i) => {
-      Animated.spring(scale, {
-        toValue: i < filled ? 1 : 0,
-        friction: 6,
-        tension: 300,
-        useNativeDriver: true,
-      }).start();
-    });
-  }, [filled, dotScales]);
-
-  const activeColor = error ? themeDanger : themeAccent;
-
-  return (
-    <Animated.View
-      className="flex-row items-center justify-center"
-      style={{ gap: 14, transform: [{ translateX: shakeAnim }] }}
-    >
-      {['d1', 'd2', 'd3', 'd4', 'd5', 'd6'].map((key, i) => (
-        <View key={key} className="items-center justify-center" style={{ width: 13, height: 13 }}>
-          <View
-            className="absolute rounded-full"
-            style={{
-              width: 13,
-              height: 13,
-              borderWidth: 1.5,
-              borderColor: i < filled ? activeColor : `${themeMuted}50`,
-            }}
-          />
-          <Animated.View
-            className="rounded-full"
-            style={{
-              width: 13,
-              height: 13,
-              backgroundColor: activeColor,
-              transform: [{ scale: dotScales[i] }],
-            }}
-          />
-        </View>
-      ))}
-    </Animated.View>
-  );
-}
-
-// Keypad key component (same as auth screen)
-function KeypadKey({
-  onPress,
-  children,
-  variant = 'default',
-}: {
-  onPress: () => void;
-  children: React.ReactNode;
-  variant?: 'default' | 'accent' | 'ghost';
-}) {
-  const [themeAccent, themeSurface] = useThemeColor(['accent', 'surface']);
-
-  return (
-    <Pressable
-      onPress={onPress}
-      className="items-center justify-center rounded-2xl"
-      style={({ pressed }) => ({
-        width: KEYPAD_BUTTON_SIZE,
-        height: KEYPAD_BUTTON_SIZE,
-        backgroundColor: variant === 'ghost'
-          ? (pressed ? `${themeSurface}80` : 'transparent')
-          : variant === 'accent'
-          ? (pressed ? `${themeAccent}30` : `${themeAccent}15`)
-          : (pressed ? `${themeSurface}` : `${themeSurface}90`),
-      })}
-    >
-      {children}
-    </Pressable>
-  );
-}
 
 // Full-screen Change PIN flow component
 interface ChangePinScreenProps {
@@ -220,7 +127,7 @@ function ChangePinScreen({
 
         {/* PIN Dots */}
         <View className="items-center gap-4">
-          <PinDots filled={pin.length} error={pinError} />
+          <PinDots count={PIN_LENGTH} filled={pin.length} error={pinError} />
           <View style={{ height: 20, justifyContent: 'center' }}>
             {(pinError || error) && (
               <Text className="text-xs font-semibold" style={{ color: themeDanger }}>{error}</Text>
@@ -233,7 +140,7 @@ function ChangePinScreen({
           {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']].map((row) => (
             <View key={row.join('')} className="flex-row" style={{ gap: KEYPAD_GAP }}>
               {row.map((num) => (
-                <KeypadKey key={num} onPress={() => handleKeyPress(num)}>
+                <KeypadKey key={num} size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress(num)}>
                   <Text className="text-2xl font-semibold text-foreground">{num}</Text>
                 </KeypadKey>
               ))}
@@ -241,11 +148,11 @@ function ChangePinScreen({
           ))}
           <View className="flex-row" style={{ gap: KEYPAD_GAP }}>
             <View style={{ width: KEYPAD_BUTTON_SIZE, height: KEYPAD_BUTTON_SIZE }} />
-            <KeypadKey onPress={() => handleKeyPress('0')}>
+            <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={() => handleKeyPress('0')}>
               <Text className="text-2xl font-semibold text-foreground">0</Text>
             </KeypadKey>
             {pin.length > 0 ? (
-              <KeypadKey onPress={handleDelete} variant="ghost">
+              <KeypadKey size={KEYPAD_BUTTON_SIZE} onPress={handleDelete} variant="ghost">
                 <Ionicons name="backspace-outline" size={24} color={themeMuted} />
               </KeypadKey>
             ) : (
@@ -275,13 +182,11 @@ export default function SettingsTab() {
   // Change PIN state
   type PinStep = 'current' | 'new' | 'confirm' | 'success';
   const [pinStep, setPinStep] = useState<PinStep>('current');
-  const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [pinError, setPinError] = useState('');
   const [pinErrorShake, setPinErrorShake] = useState(false);
 
   const resetPinForm = useCallback(() => {
-    setCurrentPin('');
     setNewPin('');
     setPinError('');
     setPinErrorShake(false);
@@ -292,7 +197,6 @@ export default function SettingsTab() {
     const valid = await verifyPinAuth(enteredPin);
     if (valid) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setCurrentPin(enteredPin);
       setPinStep('new');
       setPinError('');
     } else {

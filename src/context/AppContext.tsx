@@ -130,6 +130,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setProjects((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  const resolveEncryptionKey = useCallback(async (): Promise<string | null> => {
+    if (encryptionKey) return encryptionKey;
+    const existingKey = await getEncryptionKey();
+    if (existingKey) {
+      setEncryptionKeyState(existingKey);
+      return existingKey;
+    }
+    return null;
+  }, [encryptionKey]);
+
+  const resolveOrCreateEncryptionKey = useCallback(async (): Promise<string> => {
+    const existingKey = await resolveEncryptionKey();
+    if (existingKey) return existingKey;
+    const newKey = await generateEncryptionKey();
+    await setEncryptionKey(newKey);
+    setEncryptionKeyState(newKey);
+    return newKey;
+  }, [resolveEncryptionKey]);
+
   const addSecret = useCallback(async (
     projectId: string,
     name: string,
@@ -137,21 +156,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     value: string,
     expiresAt?: string,
   ): Promise<string | undefined> => {
-    let key = encryptionKey;
-    
-    // Ensure encryption key exists (handles edge case of fresh app without going through auth)
-    if (!key) {
-      const existingKey = await getEncryptionKey();
-      if (existingKey) {
-        key = existingKey;
-        setEncryptionKeyState(existingKey);
-      } else {
-        const newKey = await generateEncryptionKey();
-        await setEncryptionKey(newKey);
-        key = newKey;
-        setEncryptionKeyState(newKey);
-      }
-    }
+    const key = await resolveOrCreateEncryptionKey();
 
     const { sealed } = await encryptValue(value, key);
 
@@ -168,7 +173,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await addSecretToStorage(newSecret);
     setSecrets((prev) => [...prev, newSecret]);
     return newSecret.id;
-  }, [encryptionKey]);
+  }, [resolveOrCreateEncryptionKey]);
 
   const deleteSecret = useCallback(async (id: string, projectId: string) => {
     await deleteSecretFromStorage(id);
@@ -187,18 +192,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     value: string,
     expiresAt?: string,
   ) => {
-    let key = encryptionKey;
-    
-    // Ensure encryption key exists
-    if (!key) {
-      const existingKey = await getEncryptionKey();
-      if (existingKey) {
-        key = existingKey;
-        setEncryptionKeyState(existingKey);
-      } else {
-        return; // Can't update without a key that should already exist
-      }
-    }
+    const key = await resolveEncryptionKey();
+    if (!key) return;
     
     const existing = secrets.find((s) => s.id === id);
     if (!existing) return;
@@ -213,7 +208,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       delete next[id];
       return next;
     });
-  }, [encryptionKey, secrets]);
+  }, [resolveEncryptionKey, secrets]);
 
   const duplicateSecret = useCallback(async (secret: Secret, projectId: string) => {
     const newSecret: Secret = {
@@ -228,18 +223,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const decryptSecret = useCallback(async (secret: Secret): Promise<string | null> => {
-    let key = encryptionKey;
-    
-    // Ensure encryption key exists
-    if (!key) {
-      const existingKey = await getEncryptionKey();
-      if (existingKey) {
-        key = existingKey;
-        setEncryptionKeyState(existingKey);
-      } else {
-        return null;
-      }
-    }
+    const key = await resolveEncryptionKey();
+    if (!key) return null;
     
     try {
       const decrypted = await decryptValue(
@@ -252,21 +237,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Decrypt single secret failed:', e);
       return null;
     }
-  }, [encryptionKey]);
+  }, [resolveEncryptionKey]);
 
   const decryptAllSecrets = useCallback(async (secretsToDecrypt: Secret[]): Promise<Record<string, string> | null> => {
-    let key = encryptionKey;
-    
-    // Ensure encryption key exists
-    if (!key) {
-      const existingKey = await getEncryptionKey();
-      if (existingKey) {
-        key = existingKey;
-        setEncryptionKeyState(existingKey);
-      } else {
-        return null;
-      }
-    }
+    const key = await resolveEncryptionKey();
+    if (!key) return null;
     
     setIsLoading(true);
     try {
@@ -288,7 +263,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [encryptionKey]);
+  }, [resolveEncryptionKey]);
 
   const clearDecryptedSecrets = useCallback(() => {
     setDecryptedSecrets({});
