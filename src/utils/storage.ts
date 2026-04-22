@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as SecureStore from 'expo-secure-store';
+import * as Keychain from 'react-native-keychain';
 import type { Project, Secret, TotpAccount } from '../types';
 
 const PROJECTS_KEY = 'projects';
@@ -73,12 +73,25 @@ export async function deleteSecret(secretId: string): Promise<void> {
   await saveSecrets(filtered);
 }
 
+async function keychainGet(service: string): Promise<string | null> {
+  const result = await Keychain.getGenericPassword({ service });
+  return result ? result.password : null;
+}
+
+async function keychainSet(service: string, value: string): Promise<void> {
+  await Keychain.setGenericPassword('value', value, { service });
+}
+
+async function keychainDelete(service: string): Promise<void> {
+  await Keychain.resetGenericPassword({ service });
+}
+
 export async function getEncryptionKey(): Promise<string | null> {
-  return SecureStore.getItemAsync(ENCRYPTION_KEY);
+  return keychainGet(ENCRYPTION_KEY);
 }
 
 export async function setEncryptionKey(key: string): Promise<void> {
-  await SecureStore.setItemAsync(ENCRYPTION_KEY, key);
+  await keychainSet(ENCRYPTION_KEY, key);
 }
 
 export async function hasEncryptionKey(): Promise<boolean> {
@@ -87,11 +100,11 @@ export async function hasEncryptionKey(): Promise<boolean> {
 }
 
 export async function getPinHash(): Promise<string | null> {
-  return SecureStore.getItemAsync(PIN_HASH_KEY);
+  return keychainGet(PIN_HASH_KEY);
 }
 
 export async function setPinHash(hash: string): Promise<void> {
-  await SecureStore.setItemAsync(PIN_HASH_KEY, hash);
+  await keychainSet(PIN_HASH_KEY, hash);
 }
 
 export async function hasPin(): Promise<boolean> {
@@ -100,11 +113,11 @@ export async function hasPin(): Promise<boolean> {
 }
 
 export async function removePin(): Promise<void> {
-  await SecureStore.deleteItemAsync(PIN_HASH_KEY);
+  await keychainDelete(PIN_HASH_KEY);
 }
 
 export async function getPinRateLimitState(): Promise<PinRateLimitState> {
-  const raw = await SecureStore.getItemAsync(PIN_RATE_LIMIT_KEY);
+  const raw = await keychainGet(PIN_RATE_LIMIT_KEY);
   if (!raw) {
     return { failedAttempts: 0, lockoutUntil: 0 };
   }
@@ -120,11 +133,11 @@ export async function getPinRateLimitState(): Promise<PinRateLimitState> {
 }
 
 export async function setPinRateLimitState(state: PinRateLimitState): Promise<void> {
-  await SecureStore.setItemAsync(PIN_RATE_LIMIT_KEY, JSON.stringify(state));
+  await keychainSet(PIN_RATE_LIMIT_KEY, JSON.stringify(state));
 }
 
 export async function clearPinRateLimitState(): Promise<void> {
-  await SecureStore.deleteItemAsync(PIN_RATE_LIMIT_KEY);
+  await keychainDelete(PIN_RATE_LIMIT_KEY);
 }
 
 // TOTP Account storage
@@ -162,7 +175,7 @@ export async function wipeAllData(): Promise<void> {
   await AsyncStorage.removeItem(PROJECTS_KEY);
   await AsyncStorage.removeItem(SECRETS_KEY);
   await AsyncStorage.removeItem(TOTP_ACCOUNTS_KEY);
-  await SecureStore.deleteItemAsync(ENCRYPTION_KEY);
-  await SecureStore.deleteItemAsync(PIN_HASH_KEY);
-  await SecureStore.deleteItemAsync(PIN_RATE_LIMIT_KEY);
+  await keychainDelete(ENCRYPTION_KEY);
+  await keychainDelete(PIN_HASH_KEY);
+  await keychainDelete(PIN_RATE_LIMIT_KEY);
 }
