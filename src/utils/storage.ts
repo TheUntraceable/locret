@@ -159,10 +159,19 @@ export async function deleteTotpAccount(accountId: string): Promise<void> {
 }
 
 export async function wipeAllData(): Promise<void> {
+  // Main data
   await AsyncStorage.removeItem(PROJECTS_KEY);
   await AsyncStorage.removeItem(SECRETS_KEY);
   await AsyncStorage.removeItem(TOTP_ACCOUNTS_KEY);
   await SecureStore.deleteItemAsync(ENCRYPTION_KEY);
   await SecureStore.deleteItemAsync(PIN_HASH_KEY);
   await SecureStore.deleteItemAsync(PIN_RATE_LIMIT_KEY);
+
+  // Chat data
+  const allKeys = await AsyncStorage.getAllKeys();
+  const chatKeys = allKeys.filter((k) => k === 'chat_conversations' || k.startsWith('chat_messages_'));
+  if (chatKeys.length > 0) {
+    await AsyncStorage.multiRemove(chatKeys);
+  }
+  await SecureStore.deleteItemAsync('chat_encryption_key').catch(() => {});
 }

@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { AppProvider } from '../context/AppContext';
 import { useApp } from '../context/AppContext';
+import { ChatProvider, useChat } from '../context/ChatContext';
 import '../utils/notifications'; // Initialize notification handler
 import '../../global.css';
 
@@ -20,14 +21,14 @@ const AUTO_LOCK_MS = 1 * 60 * 1000; // 1 minute
 
 function AutoLockManager({ children }: { children: React.ReactNode }) {
   const { lockApp } = useApp();
+  const { isGenerating } = useChat();
   const router = useRouter();
   const segments = useSegments();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const appStateRef = useRef<AppStateStatus>('active');
+  const isGeneratingRef = useRef(false);
 
   const triggerLock = useCallback(() => {
     lockApp();
-    // Only navigate if not already on /auth
     if (segments[0] !== 'auth') {
       router.replace('/auth');
     }
@@ -35,8 +36,23 @@ function AutoLockManager({ children }: { children: React.ReactNode }) {
 
   const resetTimer = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(triggerLock, AUTO_LOCK_MS);
+    // Don't start the countdown while the AI is generating
+    if (!isGeneratingRef.current) {
+      timerRef.current = setTimeout(triggerLock, AUTO_LOCK_MS);
+    }
   }, [triggerLock]);
+
+  // Pause/resume timer as generation state changes
+  useEffect(() => {
+    isGeneratingRef.current = isGenerating;
+    if (isGenerating) {
+      // Pause: clear any running countdown
+      if (timerRef.current) clearTimeout(timerRef.current);
+    } else {
+      // Resume: start a fresh countdown once generation finishes
+      resetTimer();
+    }
+  }, [isGenerating, resetTimer]);
 
   // Start timer on mount, clean up on unmount
   useEffect(() => {
@@ -44,10 +60,9 @@ function AutoLockManager({ children }: { children: React.ReactNode }) {
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [resetTimer]);
 
-  // Lock when app goes to background
+  // Lock immediately when app goes to background (even if generating)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      appStateRef.current = state;
       if (state === 'background' || state === 'inactive') {
         if (timerRef.current) clearTimeout(timerRef.current);
         triggerLock();
@@ -75,19 +90,22 @@ export default function RootLayout() {
       <KeyboardProvider>
         <HeroUINativeProvider config={config}>
           <AppProvider>
-            <AutoLockManager>
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  animation: 'fade',
-                }}
-              >
-                <Stack.Screen name="index" />
-                <Stack.Screen name="auth" />
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="project/[id]" />
-              </Stack>
-            </AutoLockManager>
+            <ChatProvider>
+              <AutoLockManager>
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    animation: 'fade',
+                  }}
+                >
+                  <Stack.Screen name="index" />
+                  <Stack.Screen name="auth" />
+                  <Stack.Screen name="(tabs)" />
+                  <Stack.Screen name="project/[id]" />
+                  <Stack.Screen name="chat/[id]" />
+                </Stack>
+              </AutoLockManager>
+            </ChatProvider>
           </AppProvider>
         </HeroUINativeProvider>
       </KeyboardProvider>
