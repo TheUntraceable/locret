@@ -32,7 +32,7 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
   const [hasScanned, setHasScanned] = useState(false);
   const [canManualSubmit, setCanManualSubmit] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
-  const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
+  const [themeFg, themeMuted, themeDanger] = useThemeColor(['foreground', 'muted', 'danger']);
   const scanLockRef = useRef(false);
   const hasInitializedRef = useRef(false);
   const prevIsOpenRef = useRef(isOpen);
@@ -177,7 +177,7 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
           <View style={StyleSheet.absoluteFill} className="items-center justify-center">
             <View
               className="w-52 h-52 rounded-2xl border-2"
-              style={{ borderColor: scanError ? themeDanger : themeAccent }}
+              style={{ borderColor: scanError ? themeDanger : 'rgba(255,255,255,0.8)' }}
             />
           </View>
           {scanError ? (
@@ -237,11 +237,12 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
           placeholder="e.g., JBSWY3DPEHPK3PXP"
           autoCapitalize="characters"
           autoCorrect={false}
+          className="font-mono"
         />
         {secretError ? (
-          <Label style={{ color: themeDanger, fontSize: 12, marginTop: 4 }}>
+          <Text className="text-xs mt-1" style={{ color: themeDanger }}>
             {secretError}
-          </Label>
+          </Text>
         ) : null}
       </TextField>
       )}
@@ -269,37 +270,33 @@ export function AddTotpDialog({ isOpen, onOpenChange, onAdd, onEdit, editAccount
 
               {!isEditing && (
               /* Mode toggle */
-              <View className="flex-row bg-surface rounded-xl p-1">
+              <View className="flex-row border border-border rounded-lg p-1">
                 <Pressable
                   onPress={() => setMode('scan')}
-                  className="flex-1 flex-row items-center justify-center gap-2 py-2.5 rounded-lg"
-                  style={mode === 'scan' ? { backgroundColor: `${themeAccent}20` } : undefined}
+                  className={`flex-1 flex-row items-center justify-center gap-2 py-2 rounded-md ${mode === 'scan' ? 'bg-surface-secondary' : ''}`}
                 >
                   <Ionicons
                     name="qr-code-outline"
-                    size={16}
-                    color={mode === 'scan' ? themeAccent : themeMuted}
+                    size={15}
+                    color={mode === 'scan' ? themeFg : themeMuted}
                   />
                   <Text
-                    className="text-sm font-medium"
-                    style={{ color: mode === 'scan' ? themeAccent : themeMuted }}
+                    className={`text-sm font-medium ${mode === 'scan' ? 'text-foreground' : 'text-muted'}`}
                   >
                     Scan QR
                   </Text>
                 </Pressable>
                 <Pressable
                   onPress={() => setMode('manual')}
-                  className="flex-1 flex-row items-center justify-center gap-2 py-2.5 rounded-lg"
-                  style={mode === 'manual' ? { backgroundColor: `${themeAccent}20` } : undefined}
+                  className={`flex-1 flex-row items-center justify-center gap-2 py-2 rounded-md ${mode === 'manual' ? 'bg-surface-secondary' : ''}`}
                 >
                   <Ionicons
                     name="keypad-outline"
-                    size={16}
-                    color={mode === 'manual' ? themeAccent : themeMuted}
+                    size={15}
+                    color={mode === 'manual' ? themeFg : themeMuted}
                   />
                   <Text
-                    className="text-sm font-medium"
-                    style={{ color: mode === 'manual' ? themeAccent : themeMuted }}
+                    className={`text-sm font-medium ${mode === 'manual' ? 'text-foreground' : 'text-muted'}`}
                   >
                     Enter Key
                   </Text>

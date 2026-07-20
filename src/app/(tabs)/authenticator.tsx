@@ -52,33 +52,26 @@ function getFaviconUrl(issuer: string): string {
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
 }
 
-function IssuerIcon({ issuer, size, accentColor }: { issuer: string; size: number; accentColor: string }) {
+function IssuerIcon({ issuer, size }: { issuer: string; size: number }) {
   const [failed, setFailed] = useState(false);
-
-  if (failed) {
-    return (
-      <View
-        className="items-center justify-center rounded-full"
-        style={{ width: size, height: size, backgroundColor: `${accentColor}20` }}
-      >
-        <Text className="font-bold" style={{ color: accentColor, fontSize: size * 0.4 }}>
-          {issuer.charAt(0).toUpperCase()}
-        </Text>
-      </View>
-    );
-  }
 
   return (
     <View
-      className="items-center justify-center rounded-full overflow-hidden"
-      style={{ width: size, height: size, backgroundColor: `${accentColor}10` }}
+      className="items-center justify-center rounded-full border border-border bg-surface overflow-hidden"
+      style={{ width: size, height: size }}
     >
-      <Image
-        source={{ uri: getFaviconUrl(issuer) }}
-        style={{ width: size * 0.6, height: size * 0.6 }}
-        contentFit="contain"
-        onError={() => setFailed(true)}
-      />
+      {failed ? (
+        <Text className="font-semibold text-foreground" style={{ fontSize: size * 0.4 }}>
+          {issuer.charAt(0).toUpperCase()}
+        </Text>
+      ) : (
+        <Image
+          source={{ uri: getFaviconUrl(issuer) }}
+          style={{ width: size * 0.55, height: size * 0.55 }}
+          contentFit="contain"
+          onError={() => setFailed(true)}
+        />
+      )}
     </View>
   );
 }
@@ -96,7 +89,7 @@ export default function AuthenticatorTab() {
   const [sheetAccount, setSheetAccount] = useState<TotpAccount | null>(null);
   const [showSheet, setShowSheet] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [themeAccent, themeMuted, themeDanger] = useThemeColor(['accent', 'muted', 'danger']);
+  const [themeFg, themeMuted, themeDanger] = useThemeColor(['foreground', 'muted', 'danger']);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -225,45 +218,39 @@ export default function AuthenticatorTab() {
       <ScrollView className="flex-1 px-5" showsVerticalScrollIndicator={false}>
         {accounts.length === 0 ? (
           <View className="items-center justify-center px-6" style={{ minHeight: 400 }}>
-            <View className="w-24 h-24 rounded-full bg-surface items-center justify-center mb-6">
-              <Ionicons name="shield-checkmark-outline" size={48} color={themeAccent} />
+            <View className="w-16 h-16 rounded-2xl border border-border bg-surface items-center justify-center mb-6">
+              <Ionicons name="shield-checkmark-outline" size={28} color={themeFg} />
             </View>
-            <Text className="text-xl font-bold text-foreground text-center">No 2FA Accounts Yet</Text>
-            <Text className="text-muted mt-2 text-center leading-5">
-              Add your two-factor authentication accounts to generate time-based codes. Your secrets are encrypted with AES-256.
+            <Text className="text-lg font-semibold text-foreground text-center">No accounts yet</Text>
+            <Text className="text-sm text-muted mt-2 text-center leading-5">
+              Add your two-factor accounts to generate time-based codes, encrypted with AES-256.
             </Text>
 
-            <View className="mt-8 gap-4 w-full">
-              <View className="flex-row items-center gap-4 px-2">
-                <View className="w-10 h-10 rounded-full bg-surface items-center justify-center">
-                  <Ionicons name="qr-code-outline" size={20} color={themeAccent} />
-                </View>
+            <View className="mt-8 w-full rounded-xl border border-border overflow-hidden">
+              <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
+                <Ionicons name="qr-code-outline" size={18} color={themeMuted} />
                 <View className="flex-1">
-                  <Text className="text-sm font-semibold text-foreground">Scan QR Code</Text>
-                  <Text className="text-xs text-muted">Instantly add accounts by scanning the QR code</Text>
+                  <Text className="text-sm font-medium text-foreground">Scan QR code</Text>
+                  <Text className="text-xs text-muted mt-0.5">Add accounts instantly from a setup page</Text>
                 </View>
               </View>
-              <View className="flex-row items-center gap-4 px-2">
-                <View className="w-10 h-10 rounded-full bg-surface items-center justify-center">
-                  <Ionicons name="time-outline" size={20} color={themeAccent} />
-                </View>
+              <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
+                <Ionicons name="time-outline" size={18} color={themeMuted} />
                 <View className="flex-1">
-                  <Text className="text-sm font-semibold text-foreground">TOTP Codes</Text>
-                  <Text className="text-xs text-muted">Time-based rotating codes, works offline</Text>
+                  <Text className="text-sm font-medium text-foreground">TOTP codes</Text>
+                  <Text className="text-xs text-muted mt-0.5">Time-based rotating codes, works offline</Text>
                 </View>
               </View>
-              <View className="flex-row items-center gap-4 px-2">
-                <View className="w-10 h-10 rounded-full bg-surface items-center justify-center">
-                  <Ionicons name="lock-closed-outline" size={20} color={themeAccent} />
-                </View>
+              <View className="flex-row items-center gap-3 px-4 py-3">
+                <Ionicons name="lock-closed-outline" size={18} color={themeMuted} />
                 <View className="flex-1">
-                  <Text className="text-sm font-semibold text-foreground">Encrypted Storage</Text>
-                  <Text className="text-xs text-muted">Same AES-256 encryption as your secrets</Text>
+                  <Text className="text-sm font-medium text-foreground">Encrypted storage</Text>
+                  <Text className="text-xs text-muted mt-0.5">Same AES-256 encryption as your secrets</Text>
                 </View>
               </View>
             </View>
 
-            <Button variant="primary" size="md" onPress={() => setShowAddDialog(true)} className="mt-8">
+            <Button variant="primary" size="md" onPress={() => setShowAddDialog(true)} className="mt-8 w-full">
               <Ionicons name="add" size={18} />
               <Button.Label>Add First Account</Button.Label>
             </Button>
@@ -271,28 +258,28 @@ export default function AuthenticatorTab() {
         ) : (
           <View className="gap-1 pb-28">
             <View className="mb-3">
-              <View className="flex-row items-center bg-surface rounded-xl px-3 gap-2">
-                <Ionicons name="search" size={18} color={themeMuted} />
+              <View className="flex-row items-center border border-border rounded-lg px-3 gap-2">
+                <Ionicons name="search" size={16} color={themeMuted} />
                 <TextInput
                   ref={searchInputRef}
                   defaultValue={searchQuery}
                   onChangeText={setSearchQuery}
                   placeholder="Search accounts..."
                   placeholderTextColor={themeMuted}
-                  className="flex-1 py-3 text-foreground"
+                  className="flex-1 py-2.5 text-sm text-foreground"
                 />
                 {searchQuery.length > 0 && (
                   <Pressable onPress={() => {
                     setSearchQuery('');
                     searchInputRef.current?.setNativeProps?.({ text: '' });
                   }}>
-                    <Ionicons name="close-circle" size={18} color={themeMuted} />
+                    <Ionicons name="close-circle" size={16} color={themeMuted} />
                   </Pressable>
                 )}
               </View>
             </View>
 
-            <Text className="text-xs font-semibold text-muted uppercase tracking-wider mt-2 mb-2 px-1">
+            <Text className="text-xs font-medium text-muted uppercase tracking-widest mt-2 mb-2 px-1">
               Accounts
             </Text>
 
@@ -304,68 +291,68 @@ export default function AuthenticatorTab() {
                 </Text>
               </View>
             ) : (
-              <View className="bg-surface rounded-xl overflow-hidden">
-                {filteredAccounts.map((account) => {
+              <View className="border border-border rounded-xl overflow-hidden">
+                {filteredAccounts.map((account, index) => {
                   const code = codes[account.id] || '------';
                   const isCopied = copiedId === account.id;
                   const remaining = accountTimers[account.id] ?? account.period;
                   const progress = remaining / account.period;
                   const isLowTime = remaining <= 5;
+                  const isLast = index === filteredAccounts.length - 1;
 
                   return (
                     <Pressable
                       key={account.id}
                       onPress={() => handleCopyCode(account.id, code)}
                       onLongPress={() => openSheet(account)}
-                      className="px-4 py-3"
+                      className={`px-4 py-3.5 ${isLast ? '' : 'border-b border-border'}`}
                     >
                       <View className="flex-row items-center justify-between gap-3">
                         <View className="flex-row items-center gap-3 flex-1">
-                          <IssuerIcon issuer={account.issuer} size={40} accentColor={themeAccent} />
+                          <IssuerIcon issuer={account.issuer} size={36} />
                           <View className="flex-1">
-                            <View className="flex-row items-center gap-2">
-                              <Text className="text-base font-semibold text-foreground">
-                                {account.issuer}
-                              </Text>
-                              {isCopied && (
-                                <View className="flex-row items-center gap-1">
-                                  <Ionicons name="checkmark-circle" size={14} color={themeAccent} />
-                                  <Text className="text-xs font-medium" style={{ color: themeAccent }}>Copied</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text className="text-xs text-muted" numberOfLines={1}>
+                            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                              {account.issuer}
+                            </Text>
+                            <Text className="text-xs text-muted mt-0.5" numberOfLines={1}>
                               {account.accountName}
                             </Text>
                           </View>
                         </View>
-                        <View className="items-end gap-1">
+                        <View className="items-end gap-1.5">
                           <Text
-                            className="text-2xl font-bold tracking-widest"
-                            style={{ color: isLowTime ? themeDanger : themeAccent }}
+                            className="text-xl font-mono tracking-wider"
+                            style={{ color: isLowTime ? themeDanger : themeFg }}
                           >
                             {formatCode(code)}
                           </Text>
-                          <View className="flex-row items-center gap-1">
-                            <View
-                              className="h-1 rounded-full bg-background overflow-hidden"
-                              style={{ width: 40 }}
-                            >
-                              <View
-                                className="h-full rounded-full"
-                                style={{
-                                  width: `${progress * 100}%`,
-                                  backgroundColor: isLowTime ? themeDanger : themeAccent,
-                                }}
-                              />
+                          {isCopied ? (
+                            <View className="flex-row items-center gap-1">
+                              <Ionicons name="checkmark" size={12} color={themeFg} />
+                              <Text className="text-xs font-medium text-foreground">Copied</Text>
                             </View>
-                            <Text
-                              className="text-xs font-semibold w-6 text-right"
-                              style={{ color: isLowTime ? themeDanger : themeMuted }}
-                            >
-                              {remaining}s
-                            </Text>
-                          </View>
+                          ) : (
+                            <View className="flex-row items-center gap-1.5">
+                              <View
+                                className="h-0.5 rounded-full bg-surface-secondary overflow-hidden"
+                                style={{ width: 40 }}
+                              >
+                                <View
+                                  className="h-full rounded-full"
+                                  style={{
+                                    width: `${progress * 100}%`,
+                                    backgroundColor: isLowTime ? themeDanger : themeFg,
+                                  }}
+                                />
+                              </View>
+                              <Text
+                                className="text-xs w-6 text-right"
+                                style={{ color: isLowTime ? themeDanger : themeMuted }}
+                              >
+                                {remaining}s
+                              </Text>
+                            </View>
+                          )}
                         </View>
                       </View>
                     </Pressable>
@@ -397,7 +384,7 @@ export default function AuthenticatorTab() {
               <View className="px-5 pb-6">
                 <View className="flex-row items-center justify-between mb-1">
                   <View className="flex-row items-center gap-3 flex-1">
-                    <IssuerIcon issuer={sheetAccount.issuer} size={32} accentColor={themeAccent} />
+                    <IssuerIcon issuer={sheetAccount.issuer} size={32} />
                     <BottomSheet.Title>{sheetAccount.issuer}</BottomSheet.Title>
                   </View>
                   <BottomSheet.Close />
@@ -431,7 +418,7 @@ export default function AuthenticatorTab() {
                       }}
                       className="flex-row items-center gap-3 py-3 px-1"
                     >
-                      <Ionicons name="copy-outline" size={20} color={themeAccent} />
+                      <Ionicons name="copy-outline" size={20} color={themeFg} />
                       <Text className="text-base text-foreground">Copy Code</Text>
                     </Pressable>
                     <Pressable
@@ -441,7 +428,7 @@ export default function AuthenticatorTab() {
                       }}
                       className="flex-row items-center gap-3 py-3 px-1"
                     >
-                      <Ionicons name="create-outline" size={20} color={themeAccent} />
+                      <Ionicons name="create-outline" size={20} color={themeFg} />
                       <Text className="text-base text-foreground">Edit</Text>
                     </Pressable>
                     <Separator className="my-1" />
