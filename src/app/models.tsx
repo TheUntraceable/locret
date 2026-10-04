@@ -3,14 +3,14 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColor, Dialog, Button } from 'heroui-native';
 import Animated, { useSharedValue, withTiming, useAnimatedStyle } from 'react-native-reanimated';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import { useChat } from '../context/ChatContext';
 import type { ModelDefinition, ModelState } from '../types';
+import { formatBytes, formatDownloadDetails, modelStateOf, normalizeModelUrl } from '../utils/modelManager';
 
-const EMPTY_STATE: ModelState = { status: 'not_downloaded', progress: 0, errorMessage: null };
+const EMPTY_STATE: ModelState = modelStateOf('not_downloaded');
 
-function ProgressBar({ progress }: { progress: number }) {
-  const [themeAccent] = useThemeColor(['accent']);
+function ProgressBar({ progress, color }: { progress: number; color: string }) {
   const width = useSharedValue(0);
 
   useEffect(() => {
@@ -24,7 +24,7 @@ function ProgressBar({ progress }: { progress: number }) {
   return (
     <View className="h-1.5 bg-background rounded-full overflow-hidden mt-2">
       <Animated.View
-        style={[animStyle, { height: '100%', borderRadius: 999, backgroundColor: themeAccent }]}
+        style={[animStyle, { height: '100%', borderRadius: 999, backgroundColor: color }]}
       />
     </View>
   );
@@ -47,19 +47,62 @@ function TagBadge({ label, variant }: { label: string; variant: ModelDefinition[
   );
 }
 
-function ModelCard({ model }: { model: ModelDefinition }) {
-  const [themeAccent, themeMuted, themeDanger, themeAccentForeground, themeSurface, themeWarning] =
-    useThemeColor(['accent', 'muted', 'danger', 'accent-foreground', 'surface', 'warning']);
+type ConfirmAction = { kind: 'delete' | 'discard'; model: ModelDefinition };
+
+function ActionButton({
+  icon,
+  label,
+  onPress,
+  color,
+  filled = false,
+  disabled = false,
+  busy = false,
+}: {
+  icon: ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  onPress: () => void;
+  color: string;
+  filled?: boolean;
+  disabled?: boolean;
+  busy?: boolean;
+}) {
+  const [themeAccent, themeAccentForeground] = useThemeColor(['accent', 'accent-foreground']);
+  const fg = filled ? themeAccentForeground : color;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        filled ? { backgroundColor: themeAccent } : { borderColor: color, borderWidth: 1 },
+        { opacity: disabled ? 0.6 : 1 },
+      ]}
+      className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl"
+    >
+      {busy ? <ActivityIndicator size="small" color={fg} /> : <Ionicons name={icon} size={15} color={fg} />}
+      <Text style={{ color: fg }} className="text-sm font-semibold">
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function ModelCard({ model, onConfirm }: { model: ModelDefinition; onConfirm: (action: ConfirmAction) => void }) {
+  const [themeAccent, themeMuted, themeDanger, themeSurface, themeWarning] = useThemeColor([
+    'accent',
+    'muted',
+    'danger',
+    'surface',
+    'warning',
+  ]);
 
   const {
     modelStates,
     loadedModelId,
     isModelLoading,
     startModelDownload,
-    cancelModelDownload,
+    pauseModelDownload,
     initModel,
     unloadModel,
-    deleteModel,
   } = useChat();
 
   const state = modelStates[model.id] ?? EMPTY_STATE;
@@ -67,6 +110,9 @@ function ModelCard({ model }: { model: ModelDefinition }) {
   const isLoading = isModelLoading && loadedModelId === null;
   const pct = Math.round(state.progress * 100);
   const removeLabel = model.isCustom ? 'Remove' : 'Uninstall';
+  const inProgress = state.status === 'downloading' || state.status === 'paused';
+  const messageColor =
+    state.status === 'error' ? themeDanger : state.status === 'paused' ? themeWarning : themeMuted;
 
   return (
     <View style={{ backgroundColor: themeSurface }} className="rounded-2xl p-4 mb-3">
@@ -93,14 +139,19 @@ function ModelCard({ model }: { model: ModelDefinition }) {
         <Text style={{ color: themeMuted }} className="text-xs mt-1">{model.sizeLabel}</Text>
       </View>
 
-      {/* Progress bar during download */}
-      {state.status === 'downloading' && (
-        <ProgressBar progress={state.progress} />
+      {/* Progress while downloading or paused */}
+      {inProgress && (
+        <>
+          <ProgressBar progress={state.progress} color={state.status === 'paused' ? themeMuted : themeAccent} />
+          <Text style={{ color: themeMuted }} className="text-xs mt-1.5">
+            {state.status === 'paused' ? `Paused · ${formatDownloadDetails(state)}` : formatDownloadDetails(state)}
+          </Text>
+        </>
       )}
 
-      {/* Error message */}
-      {state.status === 'error' && state.errorMessage && (
-        <Text style={{ color: themeDanger }} className="text-xs mt-1" numberOfLines={1}>
+      {/* Error / status message */}
+      {state.errorMessage && state.status !== 'downloaded' && state.status !== 'downloading' && (
+        <Text style={{ color: messageColor }} className="text-xs mt-1 leading-4" numberOfLines={3}>
           {state.errorMessage}
         </Text>
       )}
@@ -108,92 +159,118 @@ function ModelCard({ model }: { model: ModelDefinition }) {
       {/* Action buttons */}
       <View className="flex-row gap-2 mt-3 flex-wrap">
         {state.status === 'not_downloaded' && (
-          <Pressable
+          <ActionButton
+            icon="cloud-download-outline"
+            label="Download"
+            color={themeAccent}
+            filled
             onPress={() => startModelDownload(model.id)}
-            style={{ backgroundColor: themeAccent }}
-            className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl"
-          >
-            <Ionicons name="cloud-download-outline" size={15} color={themeAccentForeground} />
-            <Text style={{ color: themeAccentForeground }} className="text-sm font-semibold">
-              Download
-            </Text>
-          </Pressable>
+          />
         )}
 
         {state.status === 'downloading' && (
-          <Pressable
-            onPress={() => cancelModelDownload(model.id)}
-            className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl border border-muted"
-          >
-            <Ionicons name="close-outline" size={15} color={themeMuted} />
-            <Text style={{ color: themeMuted }} className="text-sm font-semibold">
-              Cancel ({pct}%)
-            </Text>
-          </Pressable>
+          <ActionButton
+            icon="pause-outline"
+            label={state.totalBytes ? `Pause (${pct}%)` : 'Pause'}
+            color={themeMuted}
+            onPress={() => pauseModelDownload(model.id).catch(console.error)}
+          />
+        )}
+
+        {state.status === 'paused' && (
+          <ActionButton
+            icon="play-outline"
+            label="Resume"
+            color={themeAccent}
+            filled
+            onPress={() => startModelDownload(model.id)}
+          />
+        )}
+
+        {inProgress && (
+          <ActionButton
+            icon="close-outline"
+            label="Remove"
+            color={themeDanger}
+            onPress={() => onConfirm({ kind: 'discard', model })}
+          />
         )}
 
         {state.status === 'error' && (
-          <Pressable
+          <ActionButton
+            icon="refresh-outline"
+            label="Retry"
+            color={themeDanger}
             onPress={() => startModelDownload(model.id)}
-            style={{ borderColor: themeDanger, borderWidth: 1 }}
-            className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl"
-          >
-            <Ionicons name="refresh-outline" size={15} color={themeDanger} />
-            <Text style={{ color: themeDanger }} className="text-sm font-semibold">Retry</Text>
-          </Pressable>
+          />
         )}
 
         {state.status === 'downloaded' && !isLoaded && (
-          <Pressable
-            onPress={() => initModel(model.id)}
+          <ActionButton
+            icon="play-outline"
+            label={isLoading ? 'Loading…' : 'Load'}
+            color={themeAccent}
+            filled
+            busy={isLoading}
             disabled={isLoading}
-            style={{ backgroundColor: themeAccent, opacity: isLoading ? 0.6 : 1 }}
-            className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl"
-          >
-            {isLoading ? (
-              <ActivityIndicator size="small" color={themeAccentForeground} />
-            ) : (
-              <Ionicons name="play-outline" size={15} color={themeAccentForeground} />
-            )}
-            <Text style={{ color: themeAccentForeground }} className="text-sm font-semibold">
-              {isLoading ? 'Loading…' : 'Load'}
-            </Text>
-          </Pressable>
+            onPress={() => initModel(model.id)}
+          />
         )}
 
         {isLoaded && (
-          <Pressable
-            onPress={() => unloadModel()}
-            className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl border border-muted"
-          >
-            <Ionicons name="stop-outline" size={15} color={themeMuted} />
-            <Text style={{ color: themeMuted }} className="text-sm font-semibold">Unload</Text>
-          </Pressable>
+          <ActionButton icon="stop-outline" label="Unload" color={themeMuted} onPress={() => unloadModel()} />
         )}
 
         {/* Remove / Uninstall — also lets you drop a custom model that isn't downloaded */}
         {(state.status === 'downloaded' ||
           state.status === 'error' ||
           (model.isCustom && state.status === 'not_downloaded')) && (
-          <Pressable
-            onPress={() => deleteModel(model.id)}
-            className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl"
-            style={{ borderColor: themeDanger, borderWidth: 1 }}
-          >
-            <Ionicons name="trash-outline" size={15} color={themeDanger} />
-            <Text style={{ color: themeDanger }} className="text-sm font-semibold">{removeLabel}</Text>
-          </Pressable>
+          <ActionButton
+            icon="trash-outline"
+            label={removeLabel}
+            color={themeDanger}
+            onPress={() => onConfirm({ kind: 'delete', model })}
+          />
         )}
       </View>
     </View>
   );
 }
 
+function confirmCopy({ kind, model }: ConfirmAction, state: ModelState) {
+  if (kind === 'discard') {
+    return {
+      title: 'Discard download?',
+      body: `This deletes the ${formatBytes(state.bytesWritten)} of ${model.name} downloaded so far. You'll have to start over.`,
+      action: 'Discard',
+    };
+  }
+  const file = state.status === 'downloaded' ? ` (${formatBytes(state.bytesWritten)})` : '';
+  return model.isCustom
+    ? {
+        title: `Remove ${model.name}?`,
+        body: `This removes the model from the list and deletes its file${file}.`,
+        action: 'Remove',
+      }
+    : {
+        title: `Uninstall ${model.name}?`,
+        body: `This deletes the downloaded file${file}. You can download it again later.`,
+        action: 'Uninstall',
+      };
+}
+
 export default function ModelsScreen() {
   const router = useRouter();
   const [themeAccent, themeMuted, themeAccentForeground, themeDanger, themeForeground, themeSurface] =
     useThemeColor(['accent', 'muted', 'accent-foreground', 'danger', 'foreground', 'surface']);
-  const { models, addCustomModel } = useChat();
+  const { models, modelStates, addCustomModel, deleteModel, discardModelDownload } = useChat();
+  // `confirm` outlives `confirmOpen` so the dialog keeps its text while closing.
+  const [confirm, setConfirm] = useState<ConfirmAction | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const requestConfirm = (action: ConfirmAction) => {
+    setConfirm(action);
+    setConfirmOpen(true);
+  };
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [name, setName] = useState('');
@@ -208,7 +285,8 @@ export default function ModelsScreen() {
 
   const handleAdd = () => {
     const trimmedName = name.trim();
-    const trimmedUrl = url.trim();
+    // Hugging Face page links (/blob/) become download links (/resolve/).
+    const trimmedUrl = normalizeModelUrl(url);
     if (!trimmedName) {
       setError('Give the model a name.');
       return;
@@ -224,6 +302,22 @@ export default function ModelsScreen() {
     addCustomModel(trimmedName, trimmedUrl);
     setShowAddDialog(false);
     resetForm();
+  };
+
+  // Bytes on disk: finished files plus partial downloads.
+  const storageUsed = models.reduce((sum, m) => {
+    const st = modelStates[m.id];
+    return st && st.status !== 'not_downloaded' && st.status !== 'error' ? sum + st.bytesWritten : sum;
+  }, 0);
+
+  const confirmState = confirm ? (modelStates[confirm.model.id] ?? EMPTY_STATE) : null;
+  const copy = confirm && confirmState ? confirmCopy(confirm, confirmState) : null;
+
+  const handleConfirm = () => {
+    if (!confirm) return;
+    const { kind, model } = confirm;
+    setConfirmOpen(false);
+    (kind === 'discard' ? discardModelDownload(model.id) : deleteModel(model.id)).catch(console.error);
   };
 
   return (
@@ -252,8 +346,14 @@ export default function ModelsScreen() {
         showsVerticalScrollIndicator={false}
       >
         {models.map((model) => (
-          <ModelCard key={model.id} model={model} />
+          <ModelCard key={model.id} model={model} onConfirm={requestConfirm} />
         ))}
+
+        {storageUsed > 0 && (
+          <Text className="text-muted text-xs text-center mt-1 mb-2">
+            Storage used by models: {formatBytes(storageUsed)}
+          </Text>
+        )}
 
         <Text className="text-muted text-xs text-center mt-2 leading-4">
           Only one model can be loaded at a time. Loading a different model will automatically unload the current one.
@@ -267,7 +367,8 @@ export default function ModelsScreen() {
           <Dialog.Content>
             <Dialog.Title>Add a model</Dialog.Title>
             <Dialog.Description>
-              Paste a direct link to a GGUF model file. It downloads in the background.
+              Paste a direct link to a GGUF model file (Hugging Face page links work too). It downloads in the
+              background and can be paused.
             </Dialog.Description>
 
             <View className="mt-3">
@@ -322,6 +423,30 @@ export default function ModelsScreen() {
               <Button variant="ghost" onPress={() => { setShowAddDialog(false); resetForm(); }}>
                 <Button.Label>Cancel</Button.Label>
               </Button>
+            </View>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog>
+
+      {/* Delete / discard confirmation */}
+      <Dialog isOpen={confirmOpen} onOpenChange={setConfirmOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay />
+          <Dialog.Content>
+            <View className="gap-4">
+              <View className="flex-row items-center justify-between">
+                <Dialog.Title>{copy?.title}</Dialog.Title>
+                <Dialog.Close variant="ghost" />
+              </View>
+              <Dialog.Description>{copy?.body}</Dialog.Description>
+              <View className="flex-row gap-3 justify-end">
+                <Button variant="ghost" size="sm" onPress={() => setConfirmOpen(false)}>
+                  <Button.Label>Cancel</Button.Label>
+                </Button>
+                <Button variant="danger" size="sm" onPress={handleConfirm}>
+                  <Button.Label>{copy?.action ?? 'Delete'}</Button.Label>
+                </Button>
+              </View>
             </View>
           </Dialog.Content>
         </Dialog.Portal>

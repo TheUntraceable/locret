@@ -91,14 +91,37 @@ export interface ModelDefinition {
   description: string;
   url: string;
   filename: string;
+  /** Display-only size, e.g. "~2.7 GB". */
   sizeLabel: string;
+  /**
+   * Exact size of the GGUF file in bytes, when known (built-in catalog, or
+   * learned for custom models from the server). Used for the free-space check
+   * and to verify a finished download.
+   */
+  sizeBytes?: number;
   isCustom?: boolean;
 }
 
-export type ModelDownloadStatus = 'not_downloaded' | 'downloading' | 'downloaded' | 'error';
+/**
+ * - 'paused'  a partial download is kept and can be resumed (explicit pause,
+ *             connection lost, or the app was closed mid-download)
+ * - 'error'   the last attempt failed and nothing resumable is left
+ */
+export type ModelDownloadStatus = 'not_downloaded' | 'downloading' | 'paused' | 'downloaded' | 'error';
 
 export interface ModelState {
   status: ModelDownloadStatus;
-  progress: number; // 0–1
+  progress: number; // 0–1 (0 while the total size is unknown)
+  /**
+   * User-facing message. Set for 'error', and may also accompany 'paused'
+   * (why it stopped) or 'not_downloaded' (e.g. an interrupted download that
+   * could not be kept).
+   */
   errorMessage: string | null;
+  /** Bytes downloaded so far ('downloaded': the file size). */
+  bytesWritten: number;
+  /** Expected total size in bytes, null while unknown. */
+  totalBytes: number | null;
+  /** Smoothed download speed (EMA) while 'downloading'; null when not measured yet. */
+  bytesPerSecond: number | null;
 }

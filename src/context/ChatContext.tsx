@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { randomUUID } from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
+import type { DownloadProgressData, DownloadResumable, FileSystemDownloadResult } from 'expo-file-system/legacy';
 import type { LlamaContext } from 'llama.rn';
 import React, {
   createContext,
@@ -34,17 +35,43 @@ import {
   type StreamSnapshot,
 } from '../utils/generationEngine';
 import {
+  DownloadError,
   MODEL_CATALOG,
   MODEL_N_CTX,
+  NO_CONNECTION_MESSAGE,
+  RESUMES_FROM_PARTIAL_FILE,
+  checkModelFile,
+  clearDownloadRecord,
   createCustomModel,
+  createModelDownload,
   deleteModelFile,
+  describeDownloadError,
+  describeHttpStatus,
+  downloadRecordFor,
+  forgetModelSize,
+  formatBytes,
+  getDownloadRecord,
   getEffectiveContextSize,
+  getExpectedModelSize,
+  getFreeDiskSpace,
+  getModelPath,
+  isHuggingFaceUrl,
   isModelFileDownloaded,
   loadCustomModels,
+  loadDownloadRecords,
   loadModel,
+  modelStateOf,
+  pauseDownload,
+  probeRemoteFile,
+  pruneDownloadRecords,
+  reconcileModelOnDisk,
   releaseModel,
+  rememberModelSize,
+  requiredFreeSpace,
   saveCustomModels,
-  startDownload,
+  saveDownloadRecord,
+  settleWithin,
+  type DownloadRecord,
 } from '../utils/modelManager';
 
 export const MAX_TOKENS_PRESETS = [512, 1024, 2048, 4096] as const;
@@ -110,11 +137,42 @@ interface FinalizeInput {
   usage: ContextUsage | null;
 }
 
-const defaultModelState = (): ModelState => ({
-  status: 'not_downloaded',
-  progress: 0,
-  errorMessage: null,
-});
+const defaultModelState = (): ModelState => modelStateOf('not_downloaded');
+
+/** Model download UI state is flushed at most this often. */
+const DOWNLOAD_FLUSH_MS = 250;
+/** A running download's record (bytes, total) is persisted at most this often. */
+const DOWNLOAD_PERSIST_MS = 5000;
+/** Speed: time constant of the EMA, and minimum window per sample. */
+const SPEED_EMA_TAU_MS = 4000;
+const SPEED_SAMPLE_MIN_MS = 500;
+/** How long pause/discard wait for the native transfer to stop writing. */
+const PAUSE_SETTLE_MS = 5000;
+
+const noop = () => undefined;
+
+/** The one in-flight transfer of a model. Lives in a ref, never in React state. */
+interface ActiveDownload {
+  def: ModelDefinition;
+  resumable: DownloadResumable | null;
+  /** Resolves once the native transfer has settled (no more writes to the file). */
+  settled: Promise<void>;
+  settle: () => void;
+  /** The native transfer settled; late progress events are ignored. */
+  finished: boolean;
+  /** Pause/discard arrived while the transfer was still being prepared. */
+  abortRequested: boolean;
+  /** Android resume answered with a different total (Range ignored): partial is unusable. */
+  rangeMismatch: boolean;
+  resumeOffset: number;
+  totalBytes: number | null;
+  bytesWritten: number;
+  lastFlushAt: number;
+  lastPersistAt: number;
+  speedSampleAt: number;
+  speedSampleBytes: number | null;
+  bytesPerSecond: number | null;
+}
 
 const initialModelStates = (): ModelStates => {
   const states: ModelStates = {};
@@ -176,8 +234,14 @@ interface ChatContextType {
   isModelLoading: boolean;
   loadingModelId: ModelId | null;
   modelLoadError: string | null;
+  /** Download, Resume and Retry: resumes from a partial download whenever possible. */
   startModelDownload: (id: ModelId) => void;
+  /** Same as pauseModelDownload (keeps the partial so it can be resumed). */
   cancelModelDownload: (id: ModelId) => void;
+  /** Pauses a running download, keeping the partial data (survives app restarts). */
+  pauseModelDownload: (id: ModelId) => Promise<void>;
+  /** Stops a download and deletes its partial data. Never deletes a completed model. */
+  discardModelDownload: (id: ModelId) => Promise<void>;
   addCustomModel: (name: string, url: string) => void;
   initModel: (id: ModelId) => Promise<void>;
   unloadModel: () => Promise<void>;
@@ -215,6 +279,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [thinkingEnabled, setThinkingEnabledState] = useState(true);
   const [maxTokens, setMaxTokensState] = useState(1024);
   const [customModelsReady] = useState(createDeferred);
+  /** Resolved once the startup download/integrity discovery has finished. */
+  const [downloadsReady] = useState(createDeferred);
 
   // ── Refs (source of truth for anything async code reads) ───────────────────
   const chatKeyRef = useRef<string | null>(null);
@@ -237,7 +303,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const opChainRef = useRef<Promise<void>>(Promise.resolve());
   const thinkingRef = useRef(true);
   const maxTokensRef = useRef(1024);
-  const downloadResumablesRef = useRef<Partial<Record<ModelId, ReturnType<typeof startDownload>>>>({});
+  const downloadsRef = useRef<Partial<Record<ModelId, ActiveDownload>>>({});
+  /** Per-model chain serialising download control operations (see withModelLock). */
+  const modelLocksRef = useRef<Partial<Record<ModelId, Promise<void>>>>({});
+  /** Per-model counter bumped by start/pause/discard: a start queued before a pause becomes a no-op. */
+  const downloadSeqRef = useRef<Partial<Record<ModelId, number>>>({});
 
   const isChatAuthenticated = chatKey !== null;
 
@@ -286,13 +356,18 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           });
         }
         customModelsReady.resolve();
+        // Download discovery: verify files, surface paused downloads (also
+        // ones that were running when the app was killed), drop fragments.
+        const all = [...MODEL_CATALOG, ...custom];
+        await loadDownloadRecords();
+        await pruneDownloadRecords(all.map((m) => m.id));
         await Promise.all(
-          [...MODEL_CATALOG, ...custom].map(async (m) => {
-            if (await isModelFileDownloaded(m)) {
-              setModelStates((prev) => ({
-                ...prev,
-                [m.id]: { status: 'downloaded', progress: 1, errorMessage: null },
-              }));
+          all.map(async (m) => {
+            try {
+              const state = await reconcileModelOnDisk(m);
+              setModelStates((prev) => ({ ...prev, [m.id]: state }));
+            } catch (e) {
+              console.warn(`Failed to check model ${m.id}:`, e);
             }
           }),
         );
@@ -300,9 +375,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         console.error('Failed to load model inventory:', e);
       } finally {
         customModelsReady.resolve();
+        downloadsReady.resolve();
       }
     })();
-  }, [customModelsReady]);
+  }, [customModelsReady, downloadsReady]);
 
   const setThinkingEnabled = useCallback((val: boolean) => {
     thinkingRef.current = val;
@@ -878,49 +954,316 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const clearGenerationError = useCallback(() => setGenerationError(null), []);
 
-  // ── Downloads (unchanged behaviour) ────────────────────────────────────────
+  // ── Downloads ──────────────────────────────────────────────────────────────
+  //
+  // Every control operation on a model's download (start/resume, pause,
+  // discard, delete, settling a finished transfer) runs under a per-model lock,
+  // so they never interleave across awaits. The transfer itself runs outside
+  // the lock: `downloadsRef` holds the one active transfer per model, and any
+  // progress event or settle whose entry is no longer current is ignored.
 
-  const runDownload = useCallback((def: ModelDefinition) => {
-    const id = def.id;
-    setModelStates((prev) => ({
-      ...prev,
-      [id]: { status: 'downloading', progress: 0, errorMessage: null },
-    }));
-
-    const resumable = startDownload(def, (progress) => {
-      setModelStates((prev) => ({
-        ...prev,
-        [id]: { ...(prev[id] ?? defaultModelState()), status: 'downloading', progress },
-      }));
-    });
-    downloadResumablesRef.current[id] = resumable;
-
-    resumable
-      .downloadAsync()
-      .then(() => {
-        setModelStates((prev) => ({
-          ...prev,
-          [id]: { status: 'downloaded', progress: 1, errorMessage: null },
-        }));
-      })
-      .catch((e: unknown) => {
-        const msg = e instanceof Error ? e.message : 'Download failed';
-        if (!msg.includes('aborted') && !msg.includes('cancelled') && !msg.includes('paused')) {
-          setModelStates((prev) => ({
-            ...prev,
-            [id]: { status: 'error', progress: 0, errorMessage: msg },
-          }));
-        }
-      })
-      .finally(() => {
-        delete downloadResumablesRef.current[id];
-      });
+  const withModelLock = useCallback(<T,>(id: ModelId, fn: () => Promise<T>): Promise<T> => {
+    const run = (modelLocksRef.current[id] ?? Promise.resolve()).then(fn);
+    modelLocksRef.current[id] = run.then(noop, noop);
+    return run;
   }, []);
 
+  /** Sets a model's state, unless the model was removed meanwhile. */
+  const setModelState = useCallback((id: ModelId, state: ModelState) => {
+    if (!modelsRef.current.some((m) => m.id === id)) return;
+    setModelStates((prev) => ({ ...prev, [id]: state }));
+  }, []);
+
+  /** Persists a size learned from the server (and shows it on custom models). */
+  const learnModelSize = useCallback((def: ModelDefinition, bytes: number) => {
+    rememberModelSize(def.id, bytes).catch(console.warn);
+    if (!def.isCustom) return;
+    setCustomModels((prev) => {
+      if (!prev.some((m) => m.id === def.id && m.sizeBytes !== bytes)) return prev;
+      const updated = prev.map((m) =>
+        m.id === def.id ? { ...m, sizeBytes: bytes, sizeLabel: formatBytes(bytes) } : m,
+      );
+      saveCustomModels(updated).catch(console.error);
+      return updated;
+    });
+  }, []);
+
+  /**
+   * After a failed attempt: 'paused' (with the reason) if something resumable
+   * is left on disk, otherwise 'error'.
+   */
+  const failDownload = useCallback(
+    async (def: ModelDefinition, message: string) => {
+      const state = await reconcileModelOnDisk(def).catch(() => modelStateOf('not_downloaded'));
+      if (state.status === 'downloaded') setModelState(def.id, state);
+      else if (state.status === 'paused') setModelState(def.id, { ...state, errorMessage: message });
+      else setModelState(def.id, modelStateOf('error', 0, state.totalBytes, message));
+    },
+    [setModelState],
+  );
+
+  const onDownloadProgress = useCallback(
+    (entry: ActiveDownload, { totalBytesWritten: written, totalBytesExpectedToWrite: expected }: DownloadProgressData) => {
+      const id = entry.def.id;
+      if (entry.finished || downloadsRef.current[id] !== entry) return;
+      entry.bytesWritten = written;
+
+      // A total below what's written means "unknown" (no Content-Length).
+      if (expected > 0 && expected >= written && expected !== entry.totalBytes) {
+        if (RESUMES_FROM_PARTIAL_FILE && entry.resumeOffset > 0 && entry.totalBytes != null) {
+          // Android appends the response to the partial file. A different total
+          // means the server ignored our Range header (or the file changed):
+          // stop now instead of appending gigabytes of garbage.
+          entry.rangeMismatch = true;
+          entry.resumable?.cancelAsync().catch(noop);
+          return;
+        }
+        entry.totalBytes = expected; // the server is authoritative over the catalog
+        learnModelSize(entry.def, expected);
+      }
+
+      const now = Date.now();
+      if (entry.speedSampleBytes === null) {
+        entry.speedSampleBytes = written;
+        entry.speedSampleAt = now;
+      }
+      if (now - entry.lastFlushAt < DOWNLOAD_FLUSH_MS) return;
+      entry.lastFlushAt = now;
+
+      const dt = now - entry.speedSampleAt;
+      if (dt >= SPEED_SAMPLE_MIN_MS) {
+        const instant = (Math.max(0, written - entry.speedSampleBytes) * 1000) / dt;
+        const alpha = 1 - Math.exp(-dt / SPEED_EMA_TAU_MS); // time-weighted EMA
+        entry.bytesPerSecond =
+          entry.bytesPerSecond === null ? instant : entry.bytesPerSecond + alpha * (instant - entry.bytesPerSecond);
+        entry.speedSampleAt = now;
+        entry.speedSampleBytes = written;
+      }
+      setModelState(id, {
+        ...modelStateOf('downloading', written, entry.totalBytes),
+        bytesPerSecond: entry.bytesPerSecond,
+      });
+
+      if (now - entry.lastPersistAt >= DOWNLOAD_PERSIST_MS) {
+        entry.lastPersistAt = now;
+        // savable() minus resumeData: on iOS that is the single-use blob this
+        // transfer was started from (stale now); on Android the partial file
+        // itself is the resume state.
+        saveDownloadRecord(id, downloadRecordFor(entry.def, written, entry.totalBytes)).catch(console.warn);
+      }
+    },
+    [learnModelSize, setModelState],
+  );
+
+  /**
+   * Lock body: probes the server, checks free space, works out what can be
+   * resumed and starts the transfer. Returns null if nothing was started.
+   */
+  const launchDownload = useCallback(
+    async (def: ModelDefinition): Promise<{ entry: ActiveDownload; transfer: Promise<FileSystemDownloadResult | undefined> } | null> => {
+      const id = def.id;
+      if (downloadsRef.current[id]) return null; // already running
+      let settle: () => void = noop;
+      const entry: ActiveDownload = {
+        def,
+        resumable: null,
+        settled: new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+        settle: () => settle(),
+        finished: false,
+        abortRequested: false,
+        rangeMismatch: false,
+        resumeOffset: 0,
+        totalBytes: null,
+        bytesWritten: 0,
+        lastFlushAt: 0,
+        lastPersistAt: 0,
+        speedSampleAt: 0,
+        speedSampleBytes: null,
+        bytesPerSecond: null,
+      };
+      downloadsRef.current[id] = entry;
+      setModelStates((prev) => ({
+        ...prev,
+        [id]: { ...(prev[id] ?? defaultModelState()), status: 'downloading', errorMessage: null, bytesPerSecond: null },
+      }));
+
+      const wanted = () => downloadsRef.current[id] === entry && !entry.abortRequested;
+      /** Pause/discard arrived while preparing: hand over to it (it is queued behind us). */
+      let consumedRecord: DownloadRecord | null = null;
+      const abandon = async () => {
+        if (consumedRecord) await saveDownloadRecord(id, consumedRecord);
+        if (downloadsRef.current[id] === entry) delete downloadsRef.current[id];
+        entry.finished = true;
+        entry.settle();
+        return null;
+      };
+
+      try {
+        const probe = await probeRemoteFile(def.url);
+        if (!wanted()) return await abandon();
+        if (probe.offline) throw new DownloadError(NO_CONNECTION_MESSAGE);
+        // HEAD can be refused by servers that allow GET (e.g. presigned URLs),
+        // so only trust auth errors from Hugging Face; 404/410 are reliable.
+        if (
+          probe.status !== null &&
+          probe.status >= 400 &&
+          (isHuggingFaceUrl(def.url) || probe.status === 404 || probe.status === 410)
+        ) {
+          throw new DownloadError(describeHttpStatus(probe.status, def.url));
+        }
+
+        const record = (await getDownloadRecord(id)) ?? null;
+        const knownSize = await getExpectedModelSize(def);
+        const sameFile = !!record && record.url === def.url && record.fileUri === getModelPath(def);
+        const remoteChanged = probe.size !== null && knownSize !== null && probe.size !== knownSize;
+        const total = probe.size ?? knownSize ?? (sameFile ? record.totalBytes : null);
+        if (probe.size !== null) learnModelSize(def, probe.size);
+        const canResume = sameFile && !remoteChanged && total !== null;
+
+        let partial = 0;
+        let resumeData: string | undefined;
+        if (RESUMES_FROM_PARTIAL_FILE) {
+          const file = await checkModelFile(def, total);
+          if (file.kind === 'complete' && total !== null) {
+            // Finished before the app could record it (e.g. killed at 100 %).
+            await clearDownloadRecord(id);
+            delete downloadsRef.current[id];
+            entry.finished = true;
+            entry.settle();
+            setModelState(id, modelStateOf('downloaded', file.size, file.size));
+            return null;
+          }
+          if (file.kind === 'short' && canResume && file.size > 0) partial = file.size;
+          else if (file.kind !== 'missing') await deleteModelFile(def);
+          if (partial > 0) resumeData = String(partial); // Range offset = bytes on disk
+        } else if (canResume && record?.resumeData) {
+          partial = record.bytesWritten;
+          resumeData = record.resumeData;
+          consumedRecord = record;
+        }
+        if (!wanted()) return await abandon();
+
+        if (total !== null) {
+          const free = await getFreeDiskSpace();
+          const needed = requiredFreeSpace(total, partial);
+          if (free !== null && free < needed) {
+            throw new DownloadError(
+              `Not enough storage: ${def.name} needs ${formatBytes(needed)} free (including a 10% margin), ` +
+                `but only ${formatBytes(free)} is available.`,
+            );
+          }
+        }
+
+        entry.resumeOffset = partial;
+        entry.totalBytes = total;
+        entry.bytesWritten = partial;
+        // Marks the download as in flight (survives a kill). iOS resume data is
+        // single-use, so it is not kept once this transfer starts from it.
+        await saveDownloadRecord(id, downloadRecordFor(def, partial, total));
+        if (!wanted()) return await abandon();
+
+        setModelState(id, modelStateOf('downloading', partial, total));
+        const resumable = createModelDownload(def, resumeData, (data) => onDownloadProgress(entry, data));
+        entry.resumable = resumable;
+        entry.lastPersistAt = Date.now();
+        const transfer = resumeData ? resumable.resumeAsync() : resumable.downloadAsync();
+        return { entry, transfer };
+      } catch (e) {
+        if (consumedRecord && !entry.resumable) await saveDownloadRecord(id, consumedRecord).catch(noop);
+        if (downloadsRef.current[id] === entry) delete downloadsRef.current[id];
+        entry.finished = true;
+        entry.settle();
+        await failDownload(def, describeDownloadError(e));
+        return null;
+      }
+    },
+    [failDownload, learnModelSize, onDownloadProgress, setModelState],
+  );
+
+  /** Lock body: verifies a settled transfer and sets the final state. */
+  const settleDownload = useCallback(
+    async (entry: ActiveDownload, outcome: { result?: FileSystemDownloadResult; error?: unknown }) => {
+      const { def } = entry;
+      const id = def.id;
+      if (downloadsRef.current[id] !== entry) return; // paused/discarded: that operation owns the state
+      delete downloadsRef.current[id];
+      try {
+        if (outcome.error !== undefined) throw outcome.error;
+        const cannotResume =
+          "This server can't resume downloads, so the partial file was discarded. Tap Retry to start over.";
+        if (entry.rangeMismatch) {
+          await deleteModelFile(def);
+          await clearDownloadRecord(id);
+          throw new DownloadError(cannotResume);
+        }
+        const result = outcome.result;
+        if (!result) throw new DownloadError('The download stopped unexpectedly.');
+        const ok = result.status >= 200 && result.status < 300;
+        // Android writes (appends, when resuming) any response body to the file,
+        // error pages included; a resumed transfer must answer 206.
+        if (!ok || (RESUMES_FROM_PARTIAL_FILE && entry.resumeOffset > 0 && result.status !== 206)) {
+          await deleteModelFile(def);
+          await clearDownloadRecord(id);
+          throw new DownloadError(ok ? cannotResume : describeHttpStatus(result.status, def.url));
+        }
+
+        const file = await checkModelFile(def, entry.totalBytes);
+        if (file.kind === 'complete') {
+          if (entry.totalBytes === null) learnModelSize(def, file.size);
+          await clearDownloadRecord(id);
+          setModelState(id, modelStateOf('downloaded', file.size, file.size));
+          return;
+        }
+        if (file.kind === 'short' && RESUMES_FROM_PARTIAL_FILE && file.size > 0) {
+          throw new DownloadError('The download ended early. Tap Resume to continue.');
+        }
+        await deleteModelFile(def);
+        await clearDownloadRecord(id);
+        throw new DownloadError(
+          file.kind === 'invalid' && file.reason === 'not_gguf'
+            ? "That link didn't return a GGUF model file. Check the URL."
+            : 'The downloaded file was incomplete or damaged and was removed. Tap Retry to download it again.',
+        );
+      } catch (e) {
+        await failDownload(def, describeDownloadError(e));
+      }
+    },
+    [failDownload, learnModelSize, setModelState],
+  );
+
+  /** Starts, resumes or retries a download. Resolves when the transfer has settled. */
+  const runDownload = useCallback(
+    async (def: ModelDefinition) => {
+      const seq = (downloadSeqRef.current[def.id] ?? 0) + 1;
+      downloadSeqRef.current[def.id] = seq;
+      await downloadsReady.promise;
+      const launched = await withModelLock(def.id, () =>
+        downloadSeqRef.current[def.id] === seq ? launchDownload(def) : Promise.resolve(null),
+      );
+      if (!launched) return;
+      const { entry, transfer } = launched;
+      let outcome: { result?: FileSystemDownloadResult; error?: unknown };
+      try {
+        outcome = { result: await transfer };
+      } catch (error) {
+        outcome = { error: error ?? new Error('Download failed') };
+      }
+      entry.finished = true;
+      entry.settle();
+      // Drops the progress listener (a finished task is not unsubscribed natively).
+      entry.resumable?.cancelAsync().catch(noop);
+      await withModelLock(def.id, () => settleDownload(entry, outcome));
+    },
+    [downloadsReady, launchDownload, settleDownload, withModelLock],
+  );
+
+  /** Download, Resume and Retry: resumes from a partial download whenever possible. */
   const startModelDownload = useCallback(
     (id: ModelId) => {
       const def = getDef(id);
-      if (def) runDownload(def);
+      if (def) runDownload(def).catch(console.error);
     },
     [getDef, runDownload],
   );
@@ -929,32 +1272,104 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const addCustomModel = useCallback(
     (name: string, url: string) => {
       const def = createCustomModel(name, url);
+      modelsRef.current = [...modelsRef.current, def];
       setCustomModels((prev) => {
         const updated = [...prev, def];
         saveCustomModels(updated).catch(console.error);
         return updated;
       });
-      runDownload(def);
+      setModelStates((prev) => ({ ...prev, [def.id]: modelStateOf('downloading') }));
+      runDownload(def).catch(console.error);
     },
     [runDownload],
   );
 
-  const cancelModelDownload = useCallback(
-    async (id: ModelId) => {
-      const resumable = downloadResumablesRef.current[id];
-      if (resumable) {
-        await resumable.pauseAsync().catch(console.error);
-        delete downloadResumablesRef.current[id];
-      }
-      const def = getDef(id);
-      if (def) await deleteModelFile(def);
-      setModelStates((prev) => ({
-        ...prev,
-        [id]: { status: 'not_downloaded', progress: 0, errorMessage: null },
-      }));
+  /** Pause/discard requested while a transfer is still being prepared: make it bail out. */
+  const requestAbort = useCallback((id: ModelId) => {
+    downloadSeqRef.current[id] = (downloadSeqRef.current[id] ?? 0) + 1;
+    const pending = downloadsRef.current[id];
+    if (pending) pending.abortRequested = true;
+  }, []);
+
+  /** Keeps the partial download so it can be resumed later, even after a restart. */
+  const pauseModelDownload = useCallback(
+    (id: ModelId): Promise<void> => {
+      requestAbort(id);
+      return withModelLock(id, async () => {
+        const def = getDef(id);
+        if (!def) return;
+        const entry = downloadsRef.current[id];
+        if (entry) {
+          delete downloadsRef.current[id]; // from here on its callbacks and settle are ignored
+          if (entry.resumable) {
+            const saved = await pauseDownload(entry.resumable);
+            await settleWithin(entry.settled, PAUSE_SETTLE_MS); // Android: writer has stopped
+            if (!RESUMES_FROM_PARTIAL_FILE) {
+              if (!saved?.resumeData) {
+                // No resume data (server without Range support, or the task had just ended).
+                await clearDownloadRecord(id);
+                const state = await reconcileModelOnDisk(def);
+                setModelState(
+                  id,
+                  state.status === 'downloaded'
+                    ? state
+                    : modelStateOf(
+                        'not_downloaded',
+                        0,
+                        entry.totalBytes,
+                        "This download couldn't be paused, so it was stopped. Download again to restart it.",
+                      ),
+                );
+                return;
+              }
+              await saveDownloadRecord(
+                id,
+                downloadRecordFor(def, entry.bytesWritten, entry.totalBytes, saved.resumeData),
+              );
+            } else {
+              await saveDownloadRecord(id, downloadRecordFor(def, entry.bytesWritten, entry.totalBytes));
+            }
+          }
+        }
+        setModelState(id, await reconcileModelOnDisk(def));
+      });
     },
-    [getDef],
+    [getDef, requestAbort, setModelState, withModelLock],
   );
+
+  /** Lock body: stops any transfer and deletes partial data (and the model file if `includeComplete`). */
+  const discardDownloadInLock = useCallback(async (def: ModelDefinition, includeComplete: boolean) => {
+    const entry = downloadsRef.current[def.id];
+    if (entry) {
+      delete downloadsRef.current[def.id];
+      if (entry.resumable) {
+        await entry.resumable.cancelAsync().catch(noop);
+        await settleWithin(entry.settled, PAUSE_SETTLE_MS);
+      }
+    }
+    await clearDownloadRecord(def.id);
+    const expected = await getExpectedModelSize(def);
+    if (includeComplete || (await checkModelFile(def, expected)).kind !== 'complete') {
+      await deleteModelFile(def).catch(console.warn);
+    }
+  }, []);
+
+  /** Stops a download and deletes its partial data. Never deletes a completed model. */
+  const discardModelDownload = useCallback(
+    (id: ModelId): Promise<void> => {
+      requestAbort(id);
+      return withModelLock(id, async () => {
+        const def = getDef(id);
+        if (!def) return;
+        await discardDownloadInLock(def, false);
+        setModelState(id, await reconcileModelOnDisk(def));
+      });
+    },
+    [discardDownloadInLock, getDef, requestAbort, setModelState, withModelLock],
+  );
+
+  /** Kept for compatibility: now pauses (keeps the partial). Use discardModelDownload to delete it. */
+  const cancelModelDownload = pauseModelDownload;
 
   // ── Model unload / delete ──────────────────────────────────────────────────
 
@@ -983,16 +1398,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if ((await AsyncStorage.getItem(ACTIVE_MODEL_KEY).catch(() => null)) === id) {
         AsyncStorage.removeItem(ACTIVE_MODEL_KEY).catch(console.warn);
       }
-      // Cancel any in-progress download
-      const resumable = downloadResumablesRef.current[id];
-      if (resumable) {
-        await resumable.pauseAsync().catch(console.error);
-        delete downloadResumablesRef.current[id];
+      // Stop any download, then delete the file and any partial data.
+      if (def) {
+        requestAbort(id);
+        await withModelLock(id, () => discardDownloadInLock(def, true));
+        if (def.isCustom) await forgetModelSize(id).catch(console.warn);
       }
-      if (def) await deleteModelFile(def);
 
       // Custom models are removed entirely; built-ins just reset to "not downloaded".
       if (def?.isCustom) {
+        modelsRef.current = modelsRef.current.filter((m) => m.id !== id);
         setCustomModels((prev) => {
           const updated = prev.filter((m) => m.id !== id);
           saveCustomModels(updated).catch(console.error);
@@ -1004,13 +1419,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           return next;
         });
       } else {
-        setModelStates((prev) => ({
-          ...prev,
-          [id]: { status: 'not_downloaded', progress: 0, errorMessage: null },
-        }));
+        setModelStates((prev) => ({ ...prev, [id]: modelStateOf('not_downloaded') }));
       }
     },
-    [getDef, stopAndRelease],
+    [discardDownloadInLock, getDef, requestAbort, stopAndRelease, withModelLock],
   );
 
   const value = useMemo<ChatContextType>(
@@ -1049,6 +1461,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       modelLoadError,
       startModelDownload,
       cancelModelDownload,
+      pauseModelDownload,
+      discardModelDownload,
       addCustomModel,
       initModel,
       unloadModel,
@@ -1092,6 +1506,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       modelLoadError,
       startModelDownload,
       cancelModelDownload,
+      pauseModelDownload,
+      discardModelDownload,
       addCustomModel,
       initModel,
       unloadModel,
