@@ -1,25 +1,22 @@
 import { View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColor } from 'heroui-native';
-import type { ModelDefinition, ModelId } from '../types';
-
-type ModelStatesType = Record<ModelId, { status: string; progress: number; errorMessage: string | null }>;
+import type { ModelDefinition, ModelId, ModelState } from '../types';
+import { formatDownloadDetails } from '../utils/modelManager';
 
 interface Props {
   models: ModelDefinition[];
-  modelStates: ModelStatesType;
+  modelStates: Record<ModelId, ModelState>;
   loadedModelId: ModelId | null;
   isModelLoading: boolean;
   onManage: () => void;
 }
 
 export function ModelDownloadBanner({ models, modelStates, loadedModelId, isModelLoading, onManage }: Props) {
-  const [themeAccent, themeMuted, themeAccentForeground, themeWarning] = useThemeColor([
-    'accent', 'muted', 'accent-foreground', 'warning',
-  ]);
+  const [themeAccent, themeMuted, themeWarning] = useThemeColor(['accent', 'muted', 'warning']);
 
-  // Find a model currently downloading
   const downloadingModel = models.find((m) => modelStates[m.id]?.status === 'downloading');
+  const pausedModel = models.find((m) => modelStates[m.id]?.status === 'paused');
   const loadedModel = loadedModelId ? models.find((m) => m.id === loadedModelId) : null;
   const anyDownloaded = models.some((m) => modelStates[m.id]?.status === 'downloaded');
 
@@ -51,15 +48,36 @@ export function ModelDownloadBanner({ models, modelStates, loadedModelId, isMode
     }
 
     if (downloadingModel) {
-      const pct = Math.round(modelStates[downloadingModel.id].progress * 100);
+      const state = modelStates[downloadingModel.id];
+      const pct = state.totalBytes ? ` ${Math.round(state.progress * 100)}%` : '';
       return (
         <>
           <Ionicons name="cloud-download-outline" size={20} color={themeAccent} style={{ marginRight: 12 }} />
           <View className="flex-1">
-            <Text className="text-foreground font-semibold text-sm">
-              Downloading {downloadingModel.name}… {pct}%
+            <Text className="text-foreground font-semibold text-sm" numberOfLines={1}>
+              Downloading {downloadingModel.name}…{pct}
             </Text>
-            <Text style={{ color: themeMuted }} className="text-xs mt-0.5">Tap to manage</Text>
+            <Text style={{ color: themeMuted }} className="text-xs mt-0.5" numberOfLines={1}>
+              {formatDownloadDetails(state)}
+            </Text>
+          </View>
+        </>
+      );
+    }
+
+    if (pausedModel) {
+      const state = modelStates[pausedModel.id];
+      const pct = state.totalBytes ? ` at ${Math.round(state.progress * 100)}%` : '';
+      return (
+        <>
+          <Ionicons name="pause-circle-outline" size={20} color={themeWarning} style={{ marginRight: 12 }} />
+          <View className="flex-1">
+            <Text className="text-foreground font-semibold text-sm" numberOfLines={1}>
+              {pausedModel.name} paused{pct}
+            </Text>
+            <Text style={{ color: themeMuted }} className="text-xs mt-0.5" numberOfLines={1}>
+              {state.errorMessage ?? 'Tap to resume or manage'}
+            </Text>
           </View>
         </>
       );
