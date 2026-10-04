@@ -22,6 +22,14 @@ const RULES: RenderRules = {
   image: () => null,
 };
 
+/**
+ * Links open only when tapped (nothing is fetched on render), and only for web
+ * and mail links: model output must not be able to fire app deep links,
+ * `intent:`/`tel:`/`sms:` URLs and the like. Returning true lets the library
+ * open the URL.
+ */
+const onLinkPress = (url: string): boolean => /^(https?:|mailto:)/i.test(url.trim());
+
 /** Greek letter map for LaTeX → Unicode. */
 const GREEK: Record<string, string> = {
   alpha: '\u03B1', beta: '\u03B2', gamma: '\u03B3', delta: '\u03B4', epsilon: '\u03B5',
@@ -330,7 +338,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, tone =
   );
 
   return (
-    <Markdown style={mdStyles} markdownit={markdownParser} rules={RULES}>
+    <Markdown style={mdStyles} markdownit={markdownParser} rules={RULES} onLinkPress={onLinkPress}>
       {processedContent}
     </Markdown>
   );

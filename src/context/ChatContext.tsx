@@ -98,6 +98,12 @@ export function canContinueMessage(message: ChatMessage | null | undefined): boo
   );
 }
 
+/** A user-facing generation error and the conversation it belongs to (null: not tied to one). */
+export interface GenerationErrorInfo {
+  conversationId: string | null;
+  message: string;
+}
+
 export interface ContextUsage {
   conversationId: string;
   /** Prompt tokens (plus generated tokens once the turn settles). */
@@ -221,7 +227,8 @@ interface ChatContextType {
   streamingContent: string;
   streamingReasoning: string;
   isStreamingReasoning: boolean;
-  generationError: string | null;
+  /** Show only where `conversationId` matches the open chat (or is null). */
+  generationError: GenerationErrorInfo | null;
   clearGenerationError: () => void;
   contextUsage: ContextUsage | null;
 
@@ -273,7 +280,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingReasoning, setStreamingReasoning] = useState('');
   const [isStreamingReasoning, setIsStreamingReasoning] = useState(false);
-  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<GenerationErrorInfo | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [messagesVersion, setMessagesVersion] = useState(0);
   const [thinkingEnabled, setThinkingEnabledState] = useState(true);
@@ -295,6 +302,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const genRef = useRef<ActiveGeneration | null>(null);
   /** Bumped by every send/continue/regenerate/cancel; queued turns that were superseded skip generation. */
   const requestSeqRef = useRef(0);
+  /**
+   * Per conversation: turns requested at or before this request seq are
+   * dropped (set when the conversation is deleted). Unlike bumping
+   * requestSeqRef, this never drops a turn queued for another conversation.
+   */
+  const droppedUpToRef = useRef<Record<string, number>>({});
+  /** In-flight loadChatKey, so concurrent unlocks can't each create a different key. */
+  const keyLoadRef = useRef<Promise<string | null> | null>(null);
   /**
    * Serialises everything that touches the llama context (turns, model
    * load/unload) so there is never more than one completion and never a
@@ -394,13 +409,36 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   // ── Core helpers ───────────────────────────────────────────────────────────
 
-  const enqueue = useCallback((op: () => Promise<void>): Promise<void> => {
+  /** `conversationId` attributes an unexpected failure of `op` to that chat. */
+  const enqueue = useCallback((op: () => Promise<void>, conversationId: string | null = null): Promise<void> => {
     const run = opChainRef.current.then(op);
     opChainRef.current = run.catch((e: unknown) => {
       console.error('Chat operation failed:', e);
-      setGenerationError(describeGenerationError(e));
+      setGenerationError({ conversationId, message: describeGenerationError(e) });
     });
     return opChainRef.current;
+  }, []);
+
+  /**
+   * False once a newer request superseded this turn, its conversation was
+   * deleted, or the chat locked since it was requested (`epoch`): a turn that
+   * had not started when the background grace expired never starts while
+   * locked. A turn already running when the lock happens is not affected (it
+   * finishes and persists with its captured key).
+   */
+  const isTurnCurrent = useCallback(
+    (reqId: number, conversationId: string, epoch: number) =>
+      reqId === requestSeqRef.current &&
+      reqId > (droppedUpToRef.current[conversationId] ?? 0) &&
+      epoch === lockEpochRef.current,
+    [],
+  );
+
+  /** A new request for this chat clears its error (and any unattributed one); other chats keep theirs. */
+  const clearErrorFor = useCallback((conversationId: string) => {
+    setGenerationError((prev) =>
+      prev && prev.conversationId !== null && prev.conversationId !== conversationId ? prev : null,
+    );
   }, []);
 
   const bumpMessages = useCallback(() => setMessagesVersion((v) => v + 1), []);
@@ -489,6 +527,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     checkBackgroundExpiry();
   }, [checkBackgroundExpiry]);
 
+  /**
+   * Recomputes a conversation's messageCount and lastMessage from storage
+   * (after a delete, or a turn that ended without text, e.g. a regenerate
+   * whose new reply failed: the summary must not keep the deleted reply).
+   */
+  const refreshConversationSummary = useCallback(
+    async (conversationId: string, key: string) => {
+      const { messages } = await chatStorage.loadMessages(conversationId, key, genRef.current?.messageId ?? null);
+      const lastWithText = [...messages].reverse().find((m) => m.content.trim());
+      const lastMessageAt =
+        lastWithText?.createdAt ??
+        messages[messages.length - 1]?.createdAt ??
+        (await chatStorage.getConversationCreatedAt(conversationId));
+      const patch: Partial<Conversation> = {
+        messageCount: messages.length,
+        lastMessage: preview(lastWithText?.content ?? ''),
+        ...(lastMessageAt ? { lastMessageAt } : {}),
+      };
+      if (await chatStorage.updateConversation(conversationId, patch, key)) {
+        applyConversationPatch(conversationId, patch);
+      }
+    },
+    [applyConversationPatch],
+  );
+
   const finalizeGeneration = useCallback(
     async (g: ActiveGeneration, r: FinalizeInput) => {
       const { conversationId, messageId, key } = g;
@@ -512,15 +575,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             key,
           );
         }
-        const patch: Partial<Conversation> = {
-          messageCount: await chatStorage.getMessageCount(conversationId),
-        };
         if (!drop && r.content.trim()) {
-          patch.lastMessage = preview(r.content);
-          patch.lastMessageAt = new Date().toISOString();
-        }
-        if (await chatStorage.updateConversation(conversationId, patch, key)) {
-          applyConversationPatch(conversationId, patch);
+          const patch: Partial<Conversation> = {
+            messageCount: await chatStorage.getMessageCount(conversationId),
+            lastMessage: preview(r.content),
+            lastMessageAt: new Date().toISOString(),
+          };
+          if (await chatStorage.updateConversation(conversationId, patch, key)) {
+            applyConversationPatch(conversationId, patch);
+          }
+        } else {
+          await refreshConversationSummary(conversationId, key);
         }
       } catch (e) {
         console.error('Failed to finalise generation:', e);
@@ -533,7 +598,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setStreamingReasoning('');
         setIsStreamingReasoning(false);
         if (r.usage) setContextUsage(r.usage);
-        if (r.finish === 'error' && r.errorText) setGenerationError(r.errorText);
+        if (r.finish === 'error' && r.errorText) setGenerationError({ conversationId, message: r.errorText });
         bumpMessages();
         // Finished in the background past the grace period: lock now. Either
         // way, if the chat is locked the model is released now that we're idle.
@@ -541,27 +606,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         releaseModelIfLockedAndIdle();
       }
     },
-    [applyConversationPatch, bumpMessages, checkBackgroundExpiry, releaseModelIfLockedAndIdle],
+    [applyConversationPatch, bumpMessages, checkBackgroundExpiry, refreshConversationSummary, releaseModelIfLockedAndIdle],
   );
 
   /**
    * Runs one assistant turn. Must run inside the op queue (no other completion
    * in flight). `history` ends with the user turn being answered;
-   * `continueFrom` is the assistant message being extended in place.
+   * `continueFrom` is the assistant message being extended in place. `reqId`
+   * is the request this turn answers: if a newer one arrived while the op was
+   * awaiting storage, the turn is skipped.
    */
   const generate = useCallback(
     async (req: {
+      reqId: number;
+      /** lockEpochRef when the turn was requested. */
+      epoch: number;
       conversationId: string;
       key: string;
       history: ChatMessage[];
       continueFrom: ChatMessage | null;
     }) => {
+      const { reqId, epoch, conversationId, key, history, continueFrom } = req;
+      // Checked synchronously with the genRef registration below: a request
+      // made after this point sees genRef and interrupts this turn; one made
+      // before it (while the op awaited storage) found no turn to interrupt,
+      // so it is honoured here instead of answering a superseded message.
+      if (!isTurnCurrent(reqId, conversationId, epoch)) return;
       const ctx = llamaRef.current;
       if (!ctx) {
-        setGenerationError('No model is loaded. Load a model to chat.');
+        setGenerationError({ conversationId, message: 'No model is loaded. Load a model to chat.' });
         return;
       }
-      const { conversationId, key, history, continueFrom } = req;
       const modelName = getDef(loadedModelIdRef.current)?.name ?? loadedModelIdRef.current ?? 'Unknown model';
       const partial = continueFrom
         ? { content: continueFrom.content, reasoning: continueFrom.reasoning ?? '' }
@@ -604,12 +679,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             key,
           );
         } else {
-          await chatStorage.appendMessage(
+          const count = await chatStorage.appendMessage(
             conversationId,
             { id: g.messageId, role: 'assistant', content: '', createdAt: new Date().toISOString() },
             key,
-            { pending: true },
+            { pending: true, requireConversation: true },
           );
+          // Conversation deleted meanwhile: settle as an empty cancel (nothing is written).
+          if (count === null) g.abortReason = 'cancelled';
         }
         bumpMessages();
 
@@ -673,9 +750,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       } finally {
         clearInterval(flushTimer);
       }
+      // A continuation that produced nothing (e.g. regenerated in 'fresh' mode
+      // because its thinking couldn't be reopened, then stopped or failed at
+      // once) keeps the text it had instead of being blanked.
+      if (partial && !result.content.trim() && !result.reasoning.trim()) {
+        result.content = partial.content;
+        result.reasoning = partial.reasoning;
+      }
       await finalizeGeneration(g, result);
     },
-    [bumpMessages, finalizeGeneration, flushStream, getDef, persistProgress],
+    [bumpMessages, finalizeGeneration, flushStream, getDef, isTurnCurrent, persistProgress],
   );
 
   // ── Models ─────────────────────────────────────────────────────────────────
@@ -686,6 +770,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setIsModelLoading(true);
     setLoadingModelId(id);
     setModelLoadError(null);
+  }, []);
+
+  /** Ends one beginModelLoading(); the loading state clears when none is left. */
+  const endModelLoading = useCallback(() => {
+    pendingModelLoadsRef.current--;
+    if (pendingModelLoadsRef.current === 0) {
+      loadingModelIdRef.current = null;
+      setIsModelLoading(false);
+      setLoadingModelId(null);
+    }
   }, []);
 
   /**
@@ -711,17 +805,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const msg = e instanceof Error ? e.message : String(e);
         setModelLoadError(`Couldn't load ${def.name}${msg ? `: ${msg}` : ''}`);
       } finally {
-        pendingModelLoadsRef.current--;
-        if (pendingModelLoadsRef.current === 0) {
-          loadingModelIdRef.current = null;
-          setIsModelLoading(false);
-          setLoadingModelId(null);
-        }
+        endModelLoading();
         // Locked while loading (e.g. auto-restore, then backgrounded): undo.
         if (lockEpochRef.current !== epoch) releaseModelIfLockedAndIdle();
       }
     },
-    [releaseCurrentModel, releaseModelIfLockedAndIdle],
+    [endModelLoading, releaseCurrentModel, releaseModelIfLockedAndIdle],
   );
 
   const initModel = useCallback(
@@ -746,35 +835,79 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * is downloaded. Runs entirely inside the op queue, so a message sent right
    * after unlocking is queued behind the load instead of failing with "no
    * model". Not awaited by callers: it never blocks the UI.
+   *
+   * `claimed`: the caller already called beginModelLoading(claimed) in the same
+   * render batch as the unlock (so the UI shows "Loading…" instead of flashing
+   * "No model loaded"); this op takes over that claim and always ends it.
    */
-  const autoRestoreModel = useCallback(() => {
-    const seq = modelRequestSeqRef.current; // any explicit load/unload supersedes the restore
-    const epoch = lockEpochRef.current;
-    void enqueue(async () => {
-      await customModelsReady.promise;
-      if (llamaRef.current || !chatKeyRef.current || seq !== modelRequestSeqRef.current) return;
-      const def = getDef(await AsyncStorage.getItem(ACTIVE_MODEL_KEY));
-      if (!def || !(await isModelFileDownloaded(def))) return;
-      beginModelLoading(def.id);
-      await loadModelInQueue(def, seq, epoch);
+  const autoRestoreModel = useCallback(
+    (claimed: ModelDefinition | null) => {
+      const seq = modelRequestSeqRef.current; // any explicit load/unload supersedes the restore
+      const epoch = lockEpochRef.current;
+      void enqueue(async () => {
+        let holdsClaim = claimed !== null;
+        try {
+          await customModelsReady.promise;
+          if (llamaRef.current || !chatKeyRef.current || seq !== modelRequestSeqRef.current) return;
+          const def = claimed ?? getDef(await AsyncStorage.getItem(ACTIVE_MODEL_KEY));
+          if (!def || !(await isModelFileDownloaded(def))) return;
+          if (!holdsClaim) beginModelLoading(def.id);
+          holdsClaim = false; // loadModelInQueue ends it
+          await loadModelInQueue(def, seq, epoch);
+        } finally {
+          if (holdsClaim) endModelLoading();
+        }
+      });
+    },
+    [beginModelLoading, customModelsReady, endModelLoading, enqueue, getDef, loadModelInQueue],
+  );
+
+  /** Reads (or on first use creates) the chat key. Concurrent callers share one read. */
+  const readChatKey = useCallback((): Promise<string | null> => {
+    if (keyLoadRef.current) return keyLoadRef.current;
+    const load = (async () => {
+      try {
+        let key = await SecureStore.getItemAsync(CHAT_KEY_STORE);
+        if (!key) {
+          key = await generateEncryptionKey();
+          await SecureStore.setItemAsync(CHAT_KEY_STORE, key);
+        }
+        return key;
+      } catch (e) {
+        console.error('Failed to load chat encryption key:', e);
+        return null;
+      }
+    })();
+    keyLoadRef.current = load;
+    void load.finally(() => {
+      if (keyLoadRef.current === load) keyLoadRef.current = null;
     });
-  }, [beginModelLoading, customModelsReady, enqueue, getDef, loadModelInQueue]);
+    return load;
+  }, []);
+
+  /** Model auto-restore would load after unlocking, or null (nothing to restore, or a model is loaded). */
+  const findModelToRestore = useCallback(async (): Promise<ModelDefinition | null> => {
+    try {
+      if (llamaRef.current) return null;
+      await customModelsReady.promise;
+      const def = getDef(await AsyncStorage.getItem(ACTIVE_MODEL_KEY));
+      return def && (await isModelFileDownloaded(def)) ? def : null;
+    } catch {
+      return null;
+    }
+  }, [customModelsReady, getDef]);
 
   const loadChatKey = useCallback(async () => {
-    try {
-      let key = await SecureStore.getItemAsync(CHAT_KEY_STORE);
-      if (!key) {
-        key = await generateEncryptionKey();
-        await SecureStore.setItemAsync(CHAT_KEY_STORE, key);
-      }
-      chatKeyRef.current = key;
-      setChatKey(key);
-    } catch (e) {
-      console.error('Failed to load chat encryption key:', e);
-      return;
-    }
-    autoRestoreModel();
-  }, [autoRestoreModel]);
+    const [key, restore] = await Promise.all([readChatKey(), findModelToRestore()]);
+    if (!key) return;
+    chatKeyRef.current = key;
+    setChatKey(key);
+    // Same batch as the unlock: the chat never renders "No model loaded" while
+    // the restore is about to start. Skipped if something is loaded/loading by now.
+    const claimed = restore && !llamaRef.current && pendingModelLoadsRef.current === 0 ? restore : null;
+    if (claimed) beginModelLoading(claimed.id);
+    autoRestoreModel(claimed);
+  }, [autoRestoreModel, beginModelLoading, findModelToRestore, readChatKey]);
 
   // ── Conversations ──────────────────────────────────────────────────────────
 
@@ -805,13 +938,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const deleteConversation = useCallback(
     async (id: string) => {
+      // Drop turns queued for this conversation (only this one: a reply queued
+      // for another chat must survive), and stop its running turn.
+      droppedUpToRef.current[id] = requestSeqRef.current;
       if (genRef.current?.conversationId === id) {
-        requestSeqRef.current++;
         interruptActive('cancelled');
         await enqueue(async () => undefined); // wait for the turn to settle
       }
       await chatStorage.deleteConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));
+      setGenerationError((prev) => (prev?.conversationId === id ? null : prev));
       bumpMessages();
     },
     [bumpMessages, enqueue, interruptActive],
@@ -837,13 +973,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   /** Appends a user message and updates the conversation summary. False if the conversation is gone. */
   const persistUserMessage = useCallback(
     async (conversationId: string, text: string, key: string): Promise<boolean> => {
-      if (!(await chatStorage.hasConversation(conversationId))) return false;
       const now = new Date().toISOString();
+      // Existence is checked inside the messages lock (see chatStorage.deleteConversation).
       const count = await chatStorage.appendMessage(
         conversationId,
         { id: randomUUID(), role: 'user', content: text, createdAt: now },
         key,
+        { requireConversation: true },
       );
+      if (count === null) return false;
       const patch: Partial<Conversation> = { lastMessage: preview(text), lastMessageAt: now, messageCount: count };
       if (count === 1) patch.title = text.slice(0, 60);
       if (await chatStorage.updateConversation(conversationId, patch, key)) {
@@ -860,8 +998,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const key = chatKeyRef.current;
       const trimmed = text.trim();
       if (!key || !trimmed) return Promise.resolve();
-      setGenerationError(null);
+      clearErrorFor(conversationId);
       const reqId = ++requestSeqRef.current;
+      const epoch = lockEpochRef.current;
       // Interrupt-with-new-message: the running turn stops, settles and is
       // finalised as 'interrupted' (or dropped if empty) by its own queued op;
       // this op then appends the user message and answers with the partial in
@@ -869,55 +1008,68 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       // message but skip generation, so there is never more than one reply.
       interruptActive('interrupted');
       return enqueue(async () => {
+        // Saved even if superseded or locked meanwhile: what the user typed is
+        // never lost (after unlocking, the chat offers "Generate").
         if (!(await persistUserMessage(conversationId, trimmed, key))) return;
-        if (reqId !== requestSeqRef.current) return;
+        if (!isTurnCurrent(reqId, conversationId, epoch)) return;
         const { messages } = await chatStorage.loadMessages(conversationId, key);
-        await generate({ conversationId, key, history: messages, continueFrom: null });
-      });
+        await generate({ reqId, epoch, conversationId, key, history: messages, continueFrom: null });
+      }, conversationId);
     },
-    [enqueue, generate, interruptActive, persistUserMessage],
+    [clearErrorFor, enqueue, generate, interruptActive, isTurnCurrent, persistUserMessage],
   );
 
   const continueResponse = useCallback(
     (conversationId: string): Promise<void> => {
       const key = chatKeyRef.current;
       if (!key) return Promise.resolve();
-      setGenerationError(null);
+      clearErrorFor(conversationId);
       const reqId = ++requestSeqRef.current;
+      const epoch = lockEpochRef.current;
       interruptActive('interrupted');
       return enqueue(async () => {
-        if (reqId !== requestSeqRef.current) return;
+        if (!isTurnCurrent(reqId, conversationId, epoch)) return;
         const { messages } = await chatStorage.loadMessages(conversationId, key);
         const last = messages[messages.length - 1];
         if (!canContinueMessage(last)) return;
-        await generate({ conversationId, key, history: messages.slice(0, -1), continueFrom: last });
-      });
+        await generate({ reqId, epoch, conversationId, key, history: messages.slice(0, -1), continueFrom: last });
+      }, conversationId);
     },
-    [enqueue, generate, interruptActive],
+    [clearErrorFor, enqueue, generate, interruptActive, isTurnCurrent],
   );
 
   const regenerateResponse = useCallback(
     (conversationId: string): Promise<void> => {
       const key = chatKeyRef.current;
       if (!key) return Promise.resolve();
-      setGenerationError(null);
+      clearErrorFor(conversationId);
       const reqId = ++requestSeqRef.current;
+      const epoch = lockEpochRef.current;
       interruptActive('interrupted');
       return enqueue(async () => {
-        if (reqId !== requestSeqRef.current) return;
+        if (!isTurnCurrent(reqId, conversationId, epoch)) return;
         const { messages } = await chatStorage.loadMessages(conversationId, key);
         let history = messages;
         const last = messages[messages.length - 1];
-        if (last?.role === 'assistant') {
+        if (history.length > 0 && last.role === 'assistant') history = messages.slice(0, -1);
+        if (history[history.length - 1]?.role !== 'user') return;
+        // Superseded while loading: keep the old reply rather than delete it for nothing.
+        if (!isTurnCurrent(reqId, conversationId, epoch)) return;
+        // Checked at run time (a load queued ahead of this op may have finished
+        // or failed): without a model, keep the old reply instead of deleting it.
+        if (!llamaRef.current) {
+          setGenerationError({ conversationId, message: 'No model is loaded. Load a model to chat.' });
+          return;
+        }
+        if (history !== messages) {
           await chatStorage.deleteMessage(conversationId, last.id);
-          history = messages.slice(0, -1);
+          await refreshConversationSummary(conversationId, key);
           bumpMessages();
         }
-        if (history[history.length - 1]?.role !== 'user') return;
-        await generate({ conversationId, key, history, continueFrom: null });
-      });
+        await generate({ reqId, epoch, conversationId, key, history, continueFrom: null });
+      }, conversationId);
     },
-    [bumpMessages, enqueue, generate, interruptActive],
+    [bumpMessages, clearErrorFor, enqueue, generate, interruptActive, isTurnCurrent, refreshConversationSummary],
   );
 
   const cancelGeneration = useCallback((): Promise<void> => {
@@ -932,24 +1084,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (!key) return;
       const g = genRef.current;
       if (g && g.conversationId === conversationId && g.messageId === messageId) {
-        requestSeqRef.current++;
+        // Stops only this reply. requestSeq is not bumped: a message the user
+        // sent meanwhile (queued behind this turn) must still be answered.
         interruptActive('cancelled');
         await enqueue(async () => undefined); // wait for the turn to settle
       }
       if ((await chatStorage.deleteMessage(conversationId, messageId)) !== null) {
-        const { messages } = await chatStorage.loadMessages(conversationId, key, genRef.current?.messageId ?? null);
-        const lastWithText = [...messages].reverse().find((m) => m.content.trim());
-        const patch: Partial<Conversation> = {
-          messageCount: messages.length,
-          lastMessage: preview(lastWithText?.content ?? ''),
-        };
-        if (await chatStorage.updateConversation(conversationId, patch, key)) {
-          applyConversationPatch(conversationId, patch);
-        }
+        await refreshConversationSummary(conversationId, key);
       }
       bumpMessages();
     },
-    [applyConversationPatch, bumpMessages, enqueue, interruptActive],
+    [bumpMessages, enqueue, interruptActive, refreshConversationSummary],
   );
 
   const clearGenerationError = useCallback(() => setGenerationError(null), []);
@@ -974,19 +1119,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setModelStates((prev) => ({ ...prev, [id]: state }));
   }, []);
 
-  /** Persists a size learned from the server (and shows it on custom models). */
-  const learnModelSize = useCallback((def: ModelDefinition, bytes: number) => {
-    rememberModelSize(def.id, bytes).catch(console.warn);
-    if (!def.isCustom) return;
-    setCustomModels((prev) => {
-      if (!prev.some((m) => m.id === def.id && m.sizeBytes !== bytes)) return prev;
-      const updated = prev.map((m) =>
-        m.id === def.id ? { ...m, sizeBytes: bytes, sizeLabel: formatBytes(bytes) } : m,
-      );
-      saveCustomModels(updated).catch(console.error);
-      return updated;
-    });
+  /**
+   * Replaces the custom model list: ref (read by async code), state and
+   * storage. The write happens here, never inside a state updater (updaters
+   * must be pure; React may run them twice).
+   */
+  const commitCustomModels = useCallback((update: (prev: ModelDefinition[]) => ModelDefinition[]) => {
+    const prev = modelsRef.current.filter((m) => m.isCustom);
+    const updated = update(prev);
+    if (updated === prev) return;
+    modelsRef.current = [...MODEL_CATALOG, ...updated];
+    setCustomModels(updated);
+    saveCustomModels(updated).catch(console.error);
   }, []);
+
+  /** Persists a size learned from the server (and shows it on custom models). */
+  const learnModelSize = useCallback(
+    (def: ModelDefinition, bytes: number) => {
+      rememberModelSize(def.id, bytes).catch(console.warn);
+      if (!def.isCustom) return;
+      commitCustomModels((prev) =>
+        prev.some((m) => m.id === def.id && m.sizeBytes !== bytes)
+          ? prev.map((m) => (m.id === def.id ? { ...m, sizeBytes: bytes, sizeLabel: formatBytes(bytes) } : m))
+          : prev,
+      );
+    },
+    [commitCustomModels],
+  );
 
   /**
    * After a failed attempt: 'paused' (with the reason) if something resumable
@@ -1272,16 +1431,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const addCustomModel = useCallback(
     (name: string, url: string) => {
       const def = createCustomModel(name, url);
-      modelsRef.current = [...modelsRef.current, def];
-      setCustomModels((prev) => {
-        const updated = [...prev, def];
-        saveCustomModels(updated).catch(console.error);
-        return updated;
-      });
+      commitCustomModels((prev) => [...prev, def]);
       setModelStates((prev) => ({ ...prev, [def.id]: modelStateOf('downloading') }));
       runDownload(def).catch(console.error);
     },
-    [runDownload],
+    [commitCustomModels, runDownload],
   );
 
   /** Pause/discard requested while a transfer is still being prepared: make it bail out. */
@@ -1407,12 +1561,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       // Custom models are removed entirely; built-ins just reset to "not downloaded".
       if (def?.isCustom) {
-        modelsRef.current = modelsRef.current.filter((m) => m.id !== id);
-        setCustomModels((prev) => {
-          const updated = prev.filter((m) => m.id !== id);
-          saveCustomModels(updated).catch(console.error);
-          return updated;
-        });
+        commitCustomModels((prev) => prev.filter((m) => m.id !== id));
         setModelStates((prev) => {
           const next = { ...prev };
           delete next[id];
@@ -1422,7 +1571,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setModelStates((prev) => ({ ...prev, [id]: modelStateOf('not_downloaded') }));
       }
     },
-    [discardDownloadInLock, getDef, requestAbort, stopAndRelease, withModelLock],
+    [commitCustomModels, discardDownloadInLock, getDef, requestAbort, stopAndRelease, withModelLock],
   );
 
   const value = useMemo<ChatContextType>(

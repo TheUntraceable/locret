@@ -125,9 +125,14 @@ function createPersistedMap<T>(key: string) {
   };
 
   // Updates the cache synchronously (after load) and persists the whole map.
-  // AsyncStorage runs writes in issue order, so the last write wins.
+  // AsyncStorage runs writes in issue order, so the last write wins. The cache
+  // must be read *after* the await: `load()` resolves with the cache object as
+  // it was when called, so two writes issued in the same tick (e.g. startup
+  // discovery reconciling several models) would each mutate the same old map
+  // and the second would drop the first one's change.
   const write = async (mutate: (map: Record<string, T>) => Record<string, T>) => {
-    const next = mutate({ ...(await load()) });
+    await load();
+    const next = mutate({ ...(cache ?? {}) });
     cache = next;
     await AsyncStorage.setItem(key, JSON.stringify(next)).catch((e: unknown) =>
       console.warn(`Failed to write ${key}:`, e),

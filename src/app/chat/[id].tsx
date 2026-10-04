@@ -456,10 +456,15 @@ export default function ChatScreen() {
     usage && usage.maxTokens > 0 ? Math.min(100, Math.round((usage.usedTokens / usage.maxTokens) * 100)) : null;
   const trimmedMessages = usage?.trimmedMessages ?? 0;
 
+  // Errors of other chats are not shown here (null = not tied to a chat).
+  const chatError =
+    generationError && (generationError.conversationId === null || generationError.conversationId === id)
+      ? generationError.message
+      : null;
   // The failed message already shows this error inline with Retry.
   const errorShownInline =
-    !isGenerating && lastMessage?.finishReason === 'error' && lastMessage.error === generationError;
-  const showErrorBanner = !!generationError && !errorShownInline;
+    !isGenerating && lastMessage?.finishReason === 'error' && lastMessage.error === chatError;
+  const showErrorBanner = !!chatError && !errorShownInline;
   const otherChatGenerating = isGenerating && !isThisStreaming;
 
   let placeholder = 'Message…';
@@ -608,7 +613,7 @@ export default function ChatScreen() {
             <View className="bg-surface rounded-xl pl-3 pr-1.5 py-2 flex-row items-center gap-2">
               <Ionicons name="alert-circle-outline" size={16} color={themeDanger} />
               <Text style={{ color: themeDanger }} className="text-xs flex-1 leading-4">
-                {generationError}
+                {chatError}
               </Text>
               <Pressable onPress={clearGenerationError} hitSlop={8} className="p-1 active:opacity-70" accessibilityLabel="Dismiss">
                 <Ionicons name="close" size={16} color={themeMuted} />

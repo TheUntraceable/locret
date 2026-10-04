@@ -111,11 +111,16 @@ async function openMessage(stored: StoredMessage, key: string): Promise<ChatMess
   const reasoning = await openOr(stored.reasoning, key, '');
   const error = stored.error !== undefined ? await openOr(stored.error, key, '') : undefined;
   const msg: ChatMessage & { pending?: boolean } = { ...stored, content, error };
-  if (stored.role === 'assistant') {
-    // Older app versions stored raw thinking markup inside `content`.
+  if (stored.role === 'assistant' && stored.finishReason === undefined && !stored.pending) {
+    // Older app versions stored raw thinking markup inside `content` (and never
+    // wrote finishReason). Messages from this engine already have reasoning
+    // separated, and their content may legitimately contain "<think>" (e.g. a
+    // reply explaining chat templates), so they are never re-split.
     const norm = normalizeReasoning(content, reasoning);
     msg.content = norm.content;
     msg.reasoning = norm.reasoning || undefined;
+  } else if (stored.role === 'assistant') {
+    msg.reasoning = reasoning || undefined;
   } else {
     msg.reasoning = undefined;
   }
@@ -144,6 +149,11 @@ export async function loadConversations(key: string): Promise<Conversation[]> {
 
 export async function hasConversation(id: string): Promise<boolean> {
   return (await readArray<Conversation>(CONVERSATIONS_KEY)).some((c) => c.id === id);
+}
+
+/** A conversation's creation time (stored in plaintext), or null if it doesn't exist. */
+export async function getConversationCreatedAt(id: string): Promise<string | null> {
+  return (await readArray<Conversation>(CONVERSATIONS_KEY)).find((c) => c.id === id)?.createdAt ?? null;
 }
 
 /** `conversation` is plaintext. */
@@ -182,6 +192,13 @@ export function updateConversation(
   });
 }
 
+/**
+ * Removes the conversation entry first, then its messages under the messages
+ * lock. appendMessage(requireConversation) checks for the entry inside that
+ * same lock, so an append racing this delete either runs before the removal
+ * (and is removed with it) or sees the conversation gone and writes nothing:
+ * no orphaned messages key is left behind.
+ */
 export async function deleteConversation(id: string): Promise<void> {
   await withLock(CONVERSATIONS_KEY, async () => {
     const all = await readArray<Conversation>(CONVERSATIONS_KEY);
@@ -236,14 +253,19 @@ export async function getMessageCount(conversationId: string): Promise<number> {
   return (await readArray<StoredMessage>(MSG_KEY(conversationId))).length;
 }
 
-/** Appends a plaintext message. `pending` marks an in-flight assistant message. */
+/**
+ * Appends a plaintext message and returns the new message count.
+ * `pending` marks an in-flight assistant message. With `requireConversation`
+ * nothing is written (and null is returned) if the conversation was deleted.
+ */
 export function appendMessage(
   conversationId: string,
   message: ChatMessage,
   key: string,
-  { pending = false }: { pending?: boolean } = {},
-): Promise<number> {
+  { pending = false, requireConversation = false }: { pending?: boolean; requireConversation?: boolean } = {},
+): Promise<number | null> {
   return withLock(MSG_KEY(conversationId), async () => {
+    if (requireConversation && !(await hasConversation(conversationId))) return null;
     const stored = await sealMessage(message, key, pending);
     const all = await readArray<StoredMessage>(MSG_KEY(conversationId));
     all.push(stored);

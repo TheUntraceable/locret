@@ -314,7 +314,8 @@ export default function ModelsScreen() {
   const copy = confirm && confirmState ? confirmCopy(confirm, confirmState) : null;
 
   const handleConfirm = () => {
-    if (!confirm) return;
+    // The dialog stays mounted while it animates closed: ignore a second press.
+    if (!confirm || !confirmOpen) return;
     const { kind, model } = confirm;
     setConfirmOpen(false);
     (kind === 'discard' ? discardModelDownload(model.id) : deleteModel(model.id)).catch(console.error);
