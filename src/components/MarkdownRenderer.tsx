@@ -1,10 +1,25 @@
-import { useMemo } from 'react';
-import Markdown from '@ronradtke/react-native-markdown-display';
+import { memo, useMemo } from 'react';
+import Markdown, { MarkdownIt, type RenderRules } from '@ronradtke/react-native-markdown-display';
 import { useThemeColor } from 'heroui-native';
 
 type MarkdownRendererProps = {
   content: string;
-  isStreaming?: boolean;
+  /** 'muted' renders smaller, dimmer text (used for thinking). */
+  tone?: 'default' | 'muted';
+};
+
+/**
+ * One parser shared by every renderer. The library's default prop builds a new
+ * MarkdownIt instance on every render, the most expensive part of a re-render.
+ */
+const markdownParser = MarkdownIt({ typographer: true });
+
+/**
+ * Remote images are never loaded: model output must not make a private,
+ * offline chat fetch arbitrary URLs (e.g. tracking pixels).
+ */
+const RULES: RenderRules = {
+  image: () => null,
 };
 
 /** Greek letter map for LaTeX → Unicode. */
@@ -95,17 +110,7 @@ function readArg(s: string): [string, string] {
 function latexToUnicode(tex: string): string {
   let result = tex;
 
-  // \frac{a}{b} → a/b
-  result = result.replace(/\\frac\s*/g, (_, offset) => {
-    const after = result.slice(offset + _.length);
-    const [num, rest1] = readArg(after);
-    const [den, rest2] = readArg(rest1);
-    const replacement = `${latexToUnicode(num)}/${latexToUnicode(den)}`;
-    // We need to rebuild result from this point
-    result = result.slice(0, offset) + replacement + rest2;
-    return ''; // handled via mutation
-  });
-  // Re-run frac since the regex replace above is tricky with mutations — use iterative approach
+  // \frac{a}{b} → (a)/(b)
   while (result.includes('\\frac')) {
     const idx = result.indexOf('\\frac');
     const after = result.slice(idx + 5);
@@ -130,16 +135,6 @@ function latexToUnicode(tex: string): string {
     result = result.slice(0, idx) + `${nthRoot}\u221A(${latexToUnicode(arg)})` + rest;
   }
 
-  // Superscripts: x^{2} → x² or x^2 → x²
-  result = result.replace(/\^(\{[^}]*\}|[^\s{\\])/g, (_, arg) => {
-    return toSuperscript(stripBraces(arg));
-  });
-
-  // Subscripts: x_{i} → xᵢ or x_i → xᵢ
-  result = result.replace(/_(\{[^}]*\}|[^\s{\\])/g, (_, arg) => {
-    return toSubscript(stripBraces(arg));
-  });
-
   // Greek letters
   for (const [cmd, char] of Object.entries(GREEK)) {
     result = result.replace(new RegExp(`\\\\${cmd}\\b`, 'g'), char);
@@ -149,6 +144,16 @@ function latexToUnicode(tex: string): string {
   for (const [cmd, char] of Object.entries(SYMBOLS)) {
     result = result.replace(new RegExp(`\\\\${cmd}\\b`, 'g'), char);
   }
+
+  // Superscripts: x^{2} → x² or x^2 → x²
+  result = result.replace(/\^(\{[^}]*\}|[^\s{\\])/g, (_, arg) => {
+    return toSuperscript(stripBraces(arg));
+  });
+
+  // Subscripts: x_{i} → xᵢ or x_i → xᵢ
+  result = result.replace(/_(\{[^}]*\}|[^\s{\\])/g, (_, arg) => {
+    return toSubscript(stripBraces(arg));
+  });
 
   // \text{...} and \mathrm{...} — just unwrap
   result = result.replace(/\\(?:text|mathrm|mathbf|mathit|textit|textbf)\{([^}]*)\}/g, '$1');
@@ -174,15 +179,17 @@ function latexToUnicode(tex: string): string {
   return result.trim();
 }
 
-/** Pre-process content to convert LaTeX math expressions to Unicode. */
-function preprocessLatex(content: string): string {
+/** Converts LaTeX math in prose (never code) to Unicode. */
+function preprocessLatexProse(content: string): string {
   // Display math: $$...$$
   let result = content.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => {
     return '\n' + latexToUnicode(tex) + '\n';
   });
 
-  // Inline math: $...$  (but not lone $ signs)
-  result = result.replace(/\$([^\n$]+?)\$/g, (_, tex) => {
+  // Inline math: $...$. As in pandoc, the opening $ must be followed by a
+  // non-space and the closing $ preceded by a non-space and not followed by a
+  // digit, so prices ("$5 and $10") are left alone.
+  result = result.replace(/\$(?=\S)([^\n$]*?\S)\$(?!\d)/g, (_, tex) => {
     return latexToUnicode(tex);
   });
 
@@ -199,7 +206,56 @@ function preprocessLatex(content: string): string {
   return result;
 }
 
-export function MarkdownRenderer({ content, isStreaming }: MarkdownRendererProps) {
+const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})/;
+const INLINE_CODE_RE = /(`+)[^`]*?\1/g;
+
+/** Applies `fn` to prose only: fenced code blocks and inline code spans are kept verbatim. */
+function mapProse(content: string, fn: (prose: string) => string): string {
+  const out: string[] = [];
+  let prose: string[] = [];
+  let fence = '';
+  const flushProse = () => {
+    if (prose.length === 0) return;
+    const text = prose.join('\n');
+    let mapped = '';
+    let last = 0;
+    for (const m of text.matchAll(INLINE_CODE_RE)) {
+      const start = m.index ?? 0;
+      mapped += fn(text.slice(last, start)) + m[0];
+      last = start + m[0].length;
+    }
+    out.push(mapped + fn(text.slice(last)));
+    prose = [];
+  };
+  for (const line of content.split('\n')) {
+    const marker = FENCE_LINE_RE.exec(line)?.[1];
+    if (fence) {
+      out.push(line);
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = '';
+    } else if (marker) {
+      flushProse();
+      fence = marker;
+      out.push(line);
+    } else {
+      prose.push(line);
+    }
+  }
+  flushProse();
+  return out.join('\n');
+}
+
+/** Pre-process content to convert LaTeX math expressions to Unicode (code is left untouched). */
+function preprocessLatex(content: string): string {
+  if (!content.includes('$') && !content.includes('\\')) return content;
+  return mapProse(content, preprocessLatexProse);
+}
+
+/**
+ * Markdown with LaTeX→Unicode preprocessing. Memo'd on its props: chat
+ * messages render it once per settled block (components/chat/ChunkedMarkdown),
+ * so while a reply streams only the block being written is re-parsed.
+ */
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, tone = 'default' }: MarkdownRendererProps) {
   const [
     themeForeground,
     themeMuted,
@@ -210,16 +266,19 @@ export function MarkdownRenderer({ content, isStreaming }: MarkdownRendererProps
   // Pre-process LaTeX into readable Unicode before passing to Markdown
   const processedContent = useMemo(() => preprocessLatex(content), [content]);
 
+  const muted = tone === 'muted';
+  const textColor = muted ? themeMuted : themeForeground;
+
   const mdStyles = useMemo(
     () => ({
-      body: { color: themeForeground, fontSize: 14, lineHeight: 20 },
+      body: { color: textColor, fontSize: muted ? 13 : 14, lineHeight: muted ? 19 : 20 },
       paragraph: { marginTop: 0, marginBottom: 6 },
-      heading1: { color: themeForeground, fontSize: 20, fontWeight: '700' as const, marginBottom: 6, marginTop: 10 },
-      heading2: { color: themeForeground, fontSize: 18, fontWeight: '700' as const, marginBottom: 5, marginTop: 8 },
-      heading3: { color: themeForeground, fontSize: 16, fontWeight: '600' as const, marginBottom: 4, marginTop: 6 },
-      heading4: { color: themeForeground, fontSize: 15, fontWeight: '600' as const, marginBottom: 3, marginTop: 5 },
-      heading5: { color: themeForeground, fontSize: 14, fontWeight: '600' as const, marginBottom: 2, marginTop: 4 },
-      heading6: { color: themeForeground, fontSize: 14, fontWeight: '500' as const, marginBottom: 2, marginTop: 3 },
+      heading1: { color: textColor, fontSize: 20, fontWeight: '700' as const, marginBottom: 6, marginTop: 10 },
+      heading2: { color: textColor, fontSize: 18, fontWeight: '700' as const, marginBottom: 5, marginTop: 8 },
+      heading3: { color: textColor, fontSize: 16, fontWeight: '600' as const, marginBottom: 4, marginTop: 6 },
+      heading4: { color: textColor, fontSize: 15, fontWeight: '600' as const, marginBottom: 3, marginTop: 5 },
+      heading5: { color: textColor, fontSize: 14, fontWeight: '600' as const, marginBottom: 2, marginTop: 4 },
+      heading6: { color: textColor, fontSize: 14, fontWeight: '500' as const, marginBottom: 2, marginTop: 3 },
       strong: { fontWeight: '700' as const },
       em: { fontStyle: 'italic' as const },
       link: { color: themeAccent },
@@ -267,8 +326,12 @@ export function MarkdownRenderer({ content, isStreaming }: MarkdownRendererProps
       ordered_list_icon: { color: themeMuted, fontSize: 13, marginRight: 6 },
       s: { textDecorationLine: 'line-through' as const },
     }),
-    [themeForeground, themeMuted, themeAccent, themeSurfaceSecondary],
+    [textColor, muted, themeMuted, themeAccent, themeSurfaceSecondary],
   );
 
-  return <Markdown style={mdStyles}>{processedContent}</Markdown>;
-}
+  return (
+    <Markdown style={mdStyles} markdownit={markdownParser} rules={RULES}>
+      {processedContent}
+    </Markdown>
+  );
+});

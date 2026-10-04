@@ -1,13 +1,11 @@
 import { useState, useCallback } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Dialog, Button, Switch as HeroSwitch } from 'heroui-native';
-import { MAX_TOKENS_PRESETS } from '../../context/ChatContext';
-import { useThemeColor } from 'heroui-native';
+import { Dialog, Button, Switch as HeroSwitch, useThemeColor } from 'heroui-native';
 import { FlashList } from '@shopify/flash-list';
 import * as Haptics from 'expo-haptics';
-import { useChat } from '../../context/ChatContext';
+import { MAX_TOKENS_PRESETS, useChat } from '../../context/ChatContext';
 import { BiometricAuth } from '../../components/BiometricAuth';
 import { ModelDownloadBanner } from '../../components/ModelDownloadBanner';
 import type { Conversation } from '../../types';
@@ -26,10 +24,13 @@ function formatRelativeTime(isoString: string): string {
 
 function ConversationRow({
   conversation,
+  isGenerating,
   onPress,
   onLongPress,
 }: {
   conversation: Conversation;
+  /** A reply is streaming in this conversation. */
+  isGenerating: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -53,7 +54,14 @@ function ConversationRow({
           </Text>
         ) : null}
       </View>
-      <Text className="text-muted text-xs">{formatRelativeTime(conversation.lastMessageAt)}</Text>
+      {isGenerating ? (
+        <View className="flex-row items-center gap-1">
+          <ActivityIndicator size="small" color={themeMuted} style={{ transform: [{ scale: 0.6 }] }} />
+          <Text className="text-muted text-xs">Generating…</Text>
+        </View>
+      ) : (
+        <Text className="text-muted text-xs">{formatRelativeTime(conversation.lastMessageAt)}</Text>
+      )}
     </Pressable>
   );
 }
@@ -78,6 +86,8 @@ export default function AITab() {
     setThinkingEnabled,
     maxTokens,
     setMaxTokens,
+    isGenerating,
+    streamingConversationId,
   } = useChat();
 
   const [showAuthDialog, setShowAuthDialog] = useState(false);
@@ -106,9 +116,10 @@ export default function AITab() {
       const id = await createConversation();
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       router.push({ pathname: '/chat/[id]', params: { id } });
-    } finally {
-      setIsCreating(false);
+    } catch (e) {
+      console.warn('Failed to create conversation:', e);
     }
+    setIsCreating(false);
   }, [isChatAuthenticated, isCreating, createConversation, router]);
 
   const handleDelete = useCallback(async () => {
@@ -173,11 +184,12 @@ export default function AITab() {
             <FlashList
               data={conversations}
               keyExtractor={(item) => item.id}
-              estimatedItemSize={64}
+              extraData={isGenerating ? streamingConversationId : null}
               renderItem={({ item, index }) => (
                 <View>
                   <ConversationRow
                     conversation={item}
+                    isGenerating={isGenerating && item.id === streamingConversationId}
                     onPress={() => router.push({ pathname: '/chat/[id]', params: { id: item.id } })}
                     onLongPress={async () => {
                       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -288,7 +300,7 @@ export default function AITab() {
           <Dialog.Content>
             <Dialog.Title>Delete conversation?</Dialog.Title>
             <Dialog.Description>
-              "{convToDelete?.title}" and all its messages will be permanently deleted.
+              &ldquo;{convToDelete?.title}&rdquo; and all its messages will be permanently deleted.
             </Dialog.Description>
             <View className="gap-3 mt-2">
               <Button variant="danger" onPress={handleDelete}>

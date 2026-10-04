@@ -1,108 +1,110 @@
-import { useState, useEffect } from 'react';
+import { memo, useEffect, useState, type ReactNode } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColor } from 'heroui-native';
 import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withTiming,
-  withSequence,
+  cancelAnimation,
   Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
 } from 'react-native-reanimated';
-import { MarkdownRenderer } from './MarkdownRenderer';
+import { ChunkedMarkdown } from './chat/ChunkedMarkdown';
+import { formatDuration } from './chat/format';
 
-/** Animated "Thinking..." indicator with pulsing dots — tap to expand live thinking text. */
-export function ThinkingIndicator({ thinkingText }: { thinkingText?: string }) {
-  const [themeMuted, themeAccent, themeSurfaceSecondary] = useThemeColor([
-    'muted', 'accent', 'surface-secondary',
-  ]);
+interface ThinkingBlockProps {
+  /** Message id: keeps the expanded state with its message when list cells are recycled. */
+  messageId: string;
+  /** Thinking text so far (`message.reasoning`, or `streamingReasoning` while streaming). */
+  reasoning: string;
+  /** The model is currently writing reasoning (`isStreamingReasoning`). */
+  isThinking: boolean;
+  /** Wall-clock duration of the turn, when stats exist. */
+  durationMs?: number;
+  /** The turn ended before the model finished thinking (no answer was written). */
+  stopped?: boolean;
+}
+
+/** Pulses its children's opacity while `active`. */
+function Pulse({ active, children }: { active: boolean; children: ReactNode }) {
   const opacity = useSharedValue(1);
-  const [dotCount, setDotCount] = useState(3);
-  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    opacity.value = withRepeat(
-      withSequence(
-        withTiming(0.3, { duration: 600, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 600, easing: Easing.inOut(Easing.ease) }),
-      ),
-      -1,
-      false,
-    );
-  }, [opacity]);
+    if (active) {
+      opacity.value = withRepeat(
+        withSequence(
+          withTiming(0.35, { duration: 700, easing: Easing.inOut(Easing.ease) }),
+          withTiming(1, { duration: 700, easing: Easing.inOut(Easing.ease) }),
+        ),
+        -1,
+        false,
+      );
+    } else {
+      cancelAnimation(opacity);
+      opacity.value = withTiming(1, { duration: 150 });
+    }
+    return () => cancelAnimation(opacity);
+  }, [active, opacity]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setDotCount((prev) => (prev % 3) + 1);
-    }, 500);
-    return () => clearInterval(interval);
-  }, []);
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  return (
+    <Animated.View style={style} className="flex-row items-center gap-1.5">
+      {children}
+    </Animated.View>
+  );
+}
 
-  const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  const dots = '.'.repeat(dotCount);
+/**
+ * Collapsible reasoning for an assistant message. Collapsed by default; while
+ * the model is thinking the header pulses ("Thinking…") and can be expanded to
+ * follow the reasoning live.
+ */
+export const ThinkingBlock = memo(function ThinkingBlock({
+  messageId,
+  reasoning,
+  isThinking,
+  durationMs,
+  stopped,
+}: ThinkingBlockProps) {
+  const [themeMuted, themeBorder] = useThemeColor(['muted', 'border']);
+  // Keyed by message id: list cells are recycled across messages.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const expanded = expandedId === messageId;
+  const hasText = reasoning.trim().length > 0;
+
+  let label: string;
+  if (isThinking) label = 'Thinking…';
+  else if (stopped) label = 'Thinking stopped';
+  else if (durationMs && durationMs > 0) label = `Thought for ${formatDuration(durationMs)}`;
+  else label = 'Thoughts';
 
   return (
-    <View className="mb-1.5">
+    <View className="mb-2">
       <Pressable
-        onPress={() => setExpanded((prev) => !prev)}
-        className="flex-row items-center gap-1.5 py-1"
+        onPress={() => setExpandedId(expanded ? null : messageId)}
+        disabled={!hasText}
+        hitSlop={6}
+        className="flex-row items-center gap-1.5 self-start py-1 active:opacity-70"
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
       >
-        <Animated.View style={animStyle} className="flex-row items-center gap-2">
-          <Ionicons name="sparkles-outline" size={14} color={themeAccent} />
+        <Pulse active={isThinking}>
+          <Ionicons name="sparkles-outline" size={13} color={themeMuted} />
           <Text style={{ color: themeMuted }} className="text-xs font-medium">
-            Thinking{dots}
+            {label}
           </Text>
-        </Animated.View>
-        <Ionicons
-          name={expanded ? 'chevron-up' : 'chevron-down'}
-          size={12}
-          color={themeMuted}
-        />
+        </Pulse>
+        {hasText ? (
+          <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={12} color={themeMuted} />
+        ) : null}
       </Pressable>
-      {expanded && thinkingText ? (
-        <View
-          style={{ backgroundColor: themeSurfaceSecondary }}
-          className="rounded-lg px-3 py-2 mt-1"
-        >
-          <MarkdownRenderer content={thinkingText} isStreaming />
+      {expanded && hasText ? (
+        <View style={{ borderLeftColor: themeBorder }} className="border-l-2 pl-3 mt-1">
+          <ChunkedMarkdown content={reasoning} tone="muted" />
         </View>
       ) : null}
     </View>
   );
-}
-
-/** Completed (or truncated) thinking block — tap to expand/collapse. */
-export function ThinkingCollapsible({ content, truncated }: { content: string; truncated?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const [themeMuted, themeAccent, themeSurfaceSecondary] = useThemeColor([
-    'muted', 'accent', 'surface-secondary',
-  ]);
-
-  return (
-    <View className="mb-1.5">
-      <Pressable
-        onPress={() => setExpanded((prev) => !prev)}
-        className="flex-row items-center gap-1.5 py-1"
-      >
-        <Ionicons name="sparkles-outline" size={14} color={themeAccent} />
-        <Text style={{ color: themeMuted }} className="text-xs font-medium">
-          {truncated ? 'Thinking was cut off' : 'Thought for a moment'}
-        </Text>
-        <Ionicons
-          name={expanded ? 'chevron-up' : 'chevron-down'}
-          size={12}
-          color={themeMuted}
-        />
-      </Pressable>
-      {expanded && (
-        <View
-          style={{ backgroundColor: themeSurfaceSecondary }}
-          className="rounded-lg px-3 py-2 mt-1"
-        >
-          <MarkdownRenderer content={content} />
-        </View>
-      )}
-    </View>
-  );
-}
+});
