@@ -71,13 +71,45 @@ export function startDownload(
   );
 }
 
+/**
+ * Context window requested for every model. The chat engine trims history to
+ * fit `effective context - n_predict - margin` (see generationEngine.ts).
+ */
+export const MODEL_N_CTX = 4096;
+
+const BASE_CONTEXT_PARAMS = {
+  n_ctx: MODEL_N_CTX,
+  // One sequence only: llama.cpp splits n_ctx across n_parallel sequences when
+  // the KV cache isn't unified, and we never use llama.rn's parallel mode.
+  n_parallel: 1,
+  use_mlock: true,
+} as const;
+
+/**
+ * Loads a GGUF model. Tries GPU offload first; initLlama throws ("Failed to
+ * load model") rather than silently falling back when GPU init fails (e.g. an
+ * OpenCL/Metal allocation failure), so retry once CPU-only.
+ */
 export async function loadModel(def: ModelDefinition): Promise<LlamaContext> {
-  return initLlama({
-    model: getModelPath(def),
-    n_ctx: 4096,
-    n_gpu_layers: 99,
-    use_mlock: true,
-  });
+  const model = getModelPath(def);
+  try {
+    return await initLlama({ model, ...BASE_CONTEXT_PARAMS, n_gpu_layers: 99 });
+  } catch (gpuError) {
+    console.warn(`GPU load failed for ${def.id}, retrying on CPU:`, gpuError);
+    return initLlama({ model, ...BASE_CONTEXT_PARAMS, n_gpu_layers: 0, no_gpu_devices: true });
+  }
+}
+
+/**
+ * Usable context size for a loaded model: MODEL_N_CTX capped by the model's
+ * training context (GGUF `<arch>.context_length`), so small custom models are
+ * never prompted past what they were trained on.
+ */
+export function getEffectiveContextSize(context: LlamaContext): number {
+  const metadata = (context.model?.metadata ?? {}) as Record<string, unknown>;
+  const arch = metadata['general.architecture'];
+  const trained = typeof arch === 'string' ? Number(metadata[`${arch}.context_length`]) : NaN;
+  return Number.isFinite(trained) && trained > 0 ? Math.min(MODEL_N_CTX, trained) : MODEL_N_CTX;
 }
 
 export async function releaseModel(context: LlamaContext): Promise<void> {

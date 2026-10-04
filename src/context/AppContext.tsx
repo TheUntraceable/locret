@@ -64,7 +64,7 @@ interface AppContextType {
     description: string | undefined,
     value: string,
     expiresAt?: string,
-  ) => Promise<void>;
+  ) => Promise<string | undefined>;
   deleteSecret: (id: string, projectId: string) => Promise<void>;
   updateSecret: (
     id: string,

@@ -35,11 +35,40 @@ export interface TotpAccount {
 
 export type ChatRole = 'user' | 'assistant';
 
+/**
+ * Why an assistant turn ended.
+ * - 'stop'        model finished naturally (EOS / stop word)
+ * - 'length'      hit the token limit (n_predict) or the context window
+ * - 'cancelled'   user pressed stop
+ * - 'interrupted' superseded by a new request (e.g. user sent a message mid-turn),
+ *                 or the app was killed mid-generation (healed on next load)
+ * - 'error'       generation threw; see ChatMessage.error
+ */
+export type FinishReason = 'stop' | 'length' | 'cancelled' | 'interrupted' | 'error';
+
+export interface MessageStats {
+  predictedTokens: number;
+  tokensPerSecond: number;
+  durationMs: number;
+  model: string; // display name of the model that produced the message
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string; // plaintext in memory; encrypted hex in storage
   createdAt: string;
+  /**
+   * Assistant only. Undefined while the message is being generated, and on
+   * messages written by older app versions (treat those as complete).
+   */
+  finishReason?: FinishReason;
+  /** Assistant only: separated thinking text. Plaintext in memory; encrypted hex in storage. */
+  reasoning?: string;
+  /** Assistant only: generation timings (accumulated across continuations). */
+  stats?: MessageStats;
+  /** Assistant only: user-facing error when finishReason === 'error'. Encrypted at rest like content. */
+  error?: string;
 }
 
 export interface Conversation {

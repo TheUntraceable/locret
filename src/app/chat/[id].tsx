@@ -6,83 +6,11 @@ import { useThemeColor, Dialog, Button } from 'heroui-native';
 import { FlashList } from '@shopify/flash-list';
 import { randomUUID } from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
-import { useChat } from '../../context/ChatContext';
+import { canContinueMessage, useChat } from '../../context/ChatContext';
+import { parseThinking } from '../../utils/thinking';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { ThinkingIndicator, ThinkingCollapsible } from '../../components/ThinkingBlock';
 import type { ChatMessage } from '../../types';
-
-/**
- * Supports two thinking formats:
- *
- * Qwen:  [thinking...]</think>[response...]
- *   - No start tag. Everything before </think> is thinking.
- *
- * Gemma: <|channel>[thinking...]<channel|>[response...]
- *   - Has an explicit start tag.
- *
- * During streaming with no recognised tags yet, we assume thinking is in
- * progress and surface the current content in the collapsible.
- */
-function parseThinking(content: string, isStreaming: boolean) {
-  // ── Qwen format ──────────────────────────────────────────────────────────
-  const QWEN_END = '</think>';
-  const qwenEndIdx = content.indexOf(QWEN_END);
-  if (qwenEndIdx !== -1) {
-    const thinkingContent = content.slice(0, qwenEndIdx).trim();
-    const visibleContent = content.slice(qwenEndIdx + QWEN_END.length).trim();
-    return {
-      completedBlocks: thinkingContent ? [thinkingContent] : [] as string[],
-      isThinking: false,
-      thinkingText: '',
-      visible: visibleContent,
-    };
-  }
-
-  // ── Gemma format ─────────────────────────────────────────────────────────
-  const GEMMA_START = '<|channel>';
-  const GEMMA_END = '<channel|>';
-  const gemmaStartIdx = content.indexOf(GEMMA_START);
-  if (gemmaStartIdx !== -1) {
-    const afterStart = content.slice(gemmaStartIdx + GEMMA_START.length);
-    const gemmaEndIdx = afterStart.indexOf(GEMMA_END);
-    if (gemmaEndIdx === -1) {
-      // Start tag seen but no end yet — still thinking
-      return {
-        completedBlocks: [] as string[],
-        isThinking: true,
-        thinkingText: afterStart,
-        visible: '',
-      };
-    }
-    const thinkingContent = afterStart.slice(0, gemmaEndIdx).trim();
-    const visibleContent = afterStart.slice(gemmaEndIdx + GEMMA_END.length).trim();
-    return {
-      completedBlocks: thinkingContent ? [thinkingContent] : [] as string[],
-      isThinking: false,
-      thinkingText: '',
-      visible: visibleContent,
-    };
-  }
-
-  // ── No tags detected ─────────────────────────────────────────────────────
-  if (isStreaming) {
-    // Qwen outputs thinking immediately with no start tag, so whatever we
-    // have so far is thinking content.
-    return {
-      completedBlocks: [] as string[],
-      isThinking: true,
-      thinkingText: content,
-      visible: '',
-    };
-  }
-
-  return {
-    completedBlocks: [] as string[],
-    isThinking: false,
-    thinkingText: '',
-    visible: content,
-  };
-}
 
 type DisplayMessage = ChatMessage | { id: 'streaming'; role: 'assistant'; content: string; createdAt: string };
 
@@ -152,10 +80,9 @@ export default function ChatScreen() {
     sendMessage,
     streamingConversationId,
     streamingContent,
-    continuingMessageId,
+    streamingMessageId,
     isGenerating,
     cancelGeneration,
-    stoppedLimitConvId,
     continueResponse,
     isModelLoaded,
     models,
@@ -175,7 +102,7 @@ export default function ChatScreen() {
 
   const conversation = conversations.find((c) => c.id === id);
   const isThisStreaming = streamingConversationId === id;
-  const canContinue = stoppedLimitConvId === id && !isGenerating;
+  const canContinue = !isGenerating && canContinueMessage(messages[messages.length - 1]);
 
   const loadedModel = models.find((m) => m.id === loadedModelId) ?? null;
   const downloadedModels = models.filter((m) => modelStates[m.id]?.status === 'downloaded');
@@ -183,7 +110,7 @@ export default function ChatScreen() {
   const displayMessages: DisplayMessage[] = isThisStreaming && streamingContent
     ? [
         // During continuation, hide the original message so streaming replaces it seamlessly
-        ...messages.filter((m) => m.id !== continuingMessageId),
+        ...messages.filter((m) => m.id !== streamingMessageId),
         { id: 'streaming', role: 'assistant', content: streamingContent, createdAt: new Date().toISOString() },
       ]
     : messages;

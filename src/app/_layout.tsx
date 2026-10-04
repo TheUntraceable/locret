@@ -1,15 +1,22 @@
 import { useCallback, useRef, useEffect } from 'react';
-import { View, AppState, AppStateStatus } from 'react-native';
+import { View } from 'react-native';
 import { Stack, useRouter, useSegments } from "expo-router";
 import { HeroUINativeProvider } from 'heroui-native';
 import { Uniwind } from 'uniwind';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
-import { AppProvider } from '../context/AppContext';
-import { useApp } from '../context/AppContext';
+import { AppProvider, useApp } from '../context/AppContext';
 import { ChatProvider, useChat } from '../context/ChatContext';
+import { useBackgroundGrace } from '../utils/appLifecycle';
 import '../utils/notifications'; // Initialize notification handler
 import '../../global.css';
+
+/**
+ * Background lock grace period (30 s). Lives in utils/appLifecycle so
+ * ChatContext can share it without importing this route file; see the comment
+ * there for why locking is not immediate.
+ */
+export { BACKGROUND_LOCK_GRACE_MS } from '../utils/appLifecycle';
 
 const config = {
   textProps: {
@@ -17,8 +24,17 @@ const config = {
   },
 };
 
-const AUTO_LOCK_MS = 1 * 60 * 1000; // 1 minute
+const AUTO_LOCK_MS = 1 * 60 * 1000; // 1 minute of foreground inactivity
 
+/**
+ * Locks the vault and routes to /auth:
+ *  - after AUTO_LOCK_MS without a touch while foregrounded (paused while the
+ *    AI is generating);
+ *  - after BACKGROUND_LOCK_GRACE_MS in the background. 'inactive' never locks,
+ *    and returning to 'active' within the grace cancels the lock, so system
+ *    overlays (Circle to Search, notification shade, permission/biometric
+ *    prompts) no longer kick the user out mid-reply.
+ */
 function AutoLockManager({ children }: { children: React.ReactNode }) {
   const { lockApp } = useApp();
   const { isGenerating } = useChat();
@@ -26,52 +42,57 @@ function AutoLockManager({ children }: { children: React.ReactNode }) {
   const segments = useSegments();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isGeneratingRef = useRef(false);
+  // Read through a ref so a pending timer never calls a stale triggerLock.
+  const firstSegmentRef = useRef<string | undefined>(segments[0]);
+
+  useEffect(() => {
+    firstSegmentRef.current = segments[0];
+  }, [segments]);
 
   const triggerLock = useCallback(() => {
     lockApp();
-    if (segments[0] !== 'auth') {
+    if (firstSegmentRef.current !== 'auth') {
       router.replace('/auth');
     }
-  }, [lockApp, router, segments]);
+  }, [lockApp, router]);
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
 
   const resetTimer = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
+    clearTimer();
     // Don't start the countdown while the AI is generating
     if (!isGeneratingRef.current) {
       timerRef.current = setTimeout(triggerLock, AUTO_LOCK_MS);
     }
-  }, [triggerLock]);
+  }, [clearTimer, triggerLock]);
 
   // Pause/resume timer as generation state changes
   useEffect(() => {
     isGeneratingRef.current = isGenerating;
     if (isGenerating) {
-      // Pause: clear any running countdown
-      if (timerRef.current) clearTimeout(timerRef.current);
+      clearTimer();
     } else {
-      // Resume: start a fresh countdown once generation finishes
       resetTimer();
     }
-  }, [isGenerating, resetTimer]);
+  }, [isGenerating, clearTimer, resetTimer]);
 
   // Start timer on mount, clean up on unmount
   useEffect(() => {
     resetTimer();
-    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [resetTimer]);
+    return clearTimer;
+  }, [resetTimer, clearTimer]);
 
-  // Lock immediately when app goes to background (even if generating)
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'background' || state === 'inactive') {
-        if (timerRef.current) clearTimeout(timerRef.current);
-        triggerLock();
-      } else if (state === 'active') {
-        resetTimer();
-      }
-    });
-    return () => sub.remove();
-  }, [triggerLock, resetTimer]);
+  useBackgroundGrace({
+    // The background grace replaces the inactivity countdown while away.
+    onBackground: clearTimer,
+    onExpire: triggerLock,
+    onResume: ({ expired }) => {
+      if (!expired) resetTimer();
+    },
+  });
 
   return (
     <View style={{ flex: 1 }} onTouchStart={resetTimer}>
